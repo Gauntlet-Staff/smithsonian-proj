@@ -424,8 +424,8 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
                 <input  // Checkbox for selecting images (for report generation)
                   type="checkbox"
                   checked={selectedImageIds.has(image.id)}
+                  onClick={(e) => e.stopPropagation()}
                   onChange={(e) => {
-                    e.stopPropagation();
                     const newSet = new Set(selectedImageIds);
                     if (e.target.checked) {
                       newSet.add(image.id);
