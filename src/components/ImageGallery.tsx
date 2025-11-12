@@ -424,7 +424,10 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
                 <input  // Checkbox for selecting images (for report generation)
                   type="checkbox"
                   checked={selectedImageIds.has(image.id)}
-                  onClick={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                  }}
                   onChange={(e) => {
                     const newSet = new Set(selectedImageIds);
                     if (e.target.checked) {
@@ -434,6 +437,7 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
                     }
                     setSelectedImageIds(newSet);
                   }}
+                  onMouseDown={(e) => e.preventDefault()}
                   disabled={image.status !== 'completed'}
                   style={{
                     marginTop: '8px',
