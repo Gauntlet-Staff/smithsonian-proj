@@ -456,7 +456,21 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
               overflowY: 'auto',
               border: '1px solid #e5e7eb'
             }}>
-              <ReactMarkdown>{generatedReport}</ReactMarkdown>
+              <ReactMarkdown
+                components={{
+                  h1: ({node, ...props}) => <h1 style={{ fontSize: '28px', fontWeight: '700', marginTop: '24px', marginBottom: '16px', color: '#1f2937' }} {...props} />,
+                  h2: ({node, ...props}) => <h2 style={{ fontSize: '24px', fontWeight: '600', marginTop: '20px', marginBottom: '12px', color: '#374151' }} {...props} />,
+                  h3: ({node, ...props}) => <h3 style={{ fontSize: '20px', fontWeight: '600', marginTop: '16px', marginBottom: '10px', color: '#4b5563' }} {...props} />,
+                  h4: ({node, ...props}) => <h4 style={{ fontSize: '18px', fontWeight: '600', marginTop: '14px', marginBottom: '8px', color: '#6b7280' }} {...props} />,
+                  p: ({node, ...props}) => <p style={{ marginTop: '12px', marginBottom: '12px', color: '#374151' }} {...props} />,
+                  ul: ({node, ...props}) => <ul style={{ marginLeft: '24px', marginTop: '8px', marginBottom: '8px', listStyleType: 'disc' }} {...props} />,
+                  ol: ({node, ...props}) => <ol style={{ marginLeft: '24px', marginTop: '8px', marginBottom: '8px' }} {...props} />,
+                  li: ({node, ...props}) => <li style={{ marginTop: '6px', marginBottom: '6px', paddingLeft: '8px' }} {...props} />,
+                  strong: ({node, ...props}) => <strong style={{ fontWeight: '700', color: '#1f2937' }} {...props} />,
+                }}
+              >
+                {generatedReport}
+              </ReactMarkdown>
             </div>
           </div>
         )} {/* Generated report ends here */}
