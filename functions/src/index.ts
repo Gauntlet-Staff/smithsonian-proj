@@ -254,7 +254,7 @@ export const generateReport = onDocumentCreated(
       return;
     }
 
-    const {combinedTexts, prompt, userId, reportStyle, maxTokens, imageData} = data;
+    const {combinedTexts, prompt, userId, reportStyle, reportDepth, imageData} = data;
 
     // Validate inputs
     if (!combinedTexts || !prompt || !userId || !imageData || !Array.isArray(imageData)) {
@@ -277,7 +277,7 @@ export const generateReport = onDocumentCreated(
         textLength: combinedTexts.length,
         promptLength: prompt.length,
         reportStyle: reportStyle || "professional",
-        maxTokens: maxTokens || 1500,
+        reportDepth: reportDepth || "standard",
         imageCount: imageData.length,
       });
 
@@ -321,11 +321,17 @@ export const generateReport = onDocumentCreated(
         }
       }
 
-      // Adjust system prompt based on report style
+      // Adjust system prompt based on report style and depth
+      const depthGuidance = {
+        brief: "Provide a concise, high-level overview focusing on the most important findings. Be direct and summarize key points without excessive detail.",
+        standard: "Provide a balanced analysis with important details and observations. Cover all key aspects thoroughly but remain focused.",
+        comprehensive: "Provide an extensive, in-depth analysis with detailed documentation. Include thorough observations, context, specific measurements when visible, detailed condition assessments, and comprehensive preservation strategies. Be exhaustive in your analysis.",
+      };
+
       const stylePrompts = {
-        casual: "You are a friendly museum guide analyzing PHYSICAL museum exhibits from photographs. You can SEE the actual artifacts, objects, and displays. Write in a conversational tone. Analyze what you SEE in the images: materials, condition, wear, damage, colors, etc.",
-        professional: "You are a professional museum curator analyzing PHYSICAL museum exhibits from photographs. You can SEE the actual artifacts. Use your visual analysis to assess: Historical Significance, Physical Condition (materials, wear, deterioration), and Preservation Recommendations. Be specific about what you observe visually.",
-        academic: "You are a scholarly museum researcher analyzing PHYSICAL museum exhibits from photographs. You can SEE the actual objects. Provide formal analysis of: materials, manufacturing techniques, condition assessment, deterioration patterns, and conservation requirements based on visual evidence.",
+        casual: `You are a friendly museum guide analyzing PHYSICAL museum exhibits from photographs. You can SEE the actual artifacts, objects, and displays. Write in a conversational tone. Analyze what you SEE in the images: materials, condition, wear, damage, colors, etc. ${depthGuidance[reportDepth as keyof typeof depthGuidance] || depthGuidance.standard}`,
+        professional: `You are a professional museum curator analyzing PHYSICAL museum exhibits from photographs. You can SEE the actual artifacts. Use your visual analysis to assess: Historical Significance, Physical Condition (materials, wear, deterioration), and Preservation Recommendations. Be specific about what you observe visually. ${depthGuidance[reportDepth as keyof typeof depthGuidance] || depthGuidance.standard}`,
+        academic: `You are a scholarly museum researcher analyzing PHYSICAL museum exhibits from photographs. You can SEE the actual objects. Provide formal analysis of: materials, manufacturing techniques, condition assessment, deterioration patterns, and conservation requirements based on visual evidence. ${depthGuidance[reportDepth as keyof typeof depthGuidance] || depthGuidance.standard}`,
       };
 
       const systemPrompt = stylePrompts[reportStyle as keyof typeof stylePrompts] ||
@@ -356,7 +362,7 @@ export const generateReport = onDocumentCreated(
             content: userContent,
           },
         ],
-        max_tokens: maxTokens || 1500,
+        max_tokens: 16000, // High limit - let depth guide the length
         temperature: 0.7,
       });
 

@@ -35,7 +35,7 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
   const [generatedReport, setGeneratedReport] = useState<string>('');
   const [currentReportId, setCurrentReportId] = useState<string | null>(null);
   const [showReportModal, setShowReportModal] = useState(false);
-  const [reportLength, setReportLength] = useState<'short' | 'medium' | 'long'>('medium');
+  const [reportDepth, setReportDepth] = useState<'brief' | 'standard' | 'comprehensive'>('standard');
   const [reportStyle, setReportStyle] = useState<'casual' | 'professional' | 'academic'>('professional');
   const { currentUser } = useAuth();
 
@@ -123,9 +123,6 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
         extractedText: img.extractedText
       }));
       
-      // Map length to max tokens
-      const maxTokensMap = { short: 500, medium: 1500, long: 3000 };
-      
       // Create a report document in Firestore - this triggers the Cloud Function
       const reportRef = await addDoc(collection(db, 'reports'), {
         userId: currentUser.uid,
@@ -133,9 +130,8 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
         imageData, // Pass images for Vision analysis
         prompt: reportPrompt,
         imageIds: Array.from(selectedImageIds),
-        reportLength,
+        reportDepth,
         reportStyle,
-        maxTokens: maxTokensMap[reportLength],
         status: 'pending',
         createdAt: new Date()
       });
@@ -611,21 +607,21 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
               />
             </div>
 
-            {/* Report Length Slider */}
+            {/* Report Depth Selector */}
             <div style={{ marginBottom: '24px' }}>
               <label style={{ display: 'block', marginBottom: '8px', fontWeight: 500, fontSize: '14px' }}>
-                📏 Report Length: <span style={{ color: '#6b7280', textTransform: 'capitalize' }}>{reportLength}</span>
+                📊 Report Depth: <span style={{ color: '#6b7280', textTransform: 'capitalize' }}>{reportDepth}</span>
               </label>
               <div style={{ display: 'flex', gap: '12px', marginTop: '12px' }}>
-                {['short', 'medium', 'long'].map((length) => (
+                {['brief', 'standard', 'comprehensive'].map((depth) => (
                   <button
-                    key={length}
-                    onClick={() => setReportLength(length as 'short' | 'medium' | 'long')}
+                    key={depth}
+                    onClick={() => setReportDepth(depth as 'brief' | 'standard' | 'comprehensive')}
                     style={{
                       flex: 1,
                       padding: '12px',
-                      background: reportLength === length ? '#10b981' : '#f3f4f6',
-                      color: reportLength === length ? 'white' : '#374151',
+                      background: reportDepth === depth ? '#10b981' : '#f3f4f6',
+                      color: reportDepth === depth ? 'white' : '#374151',
                       border: 'none',
                       borderRadius: '6px',
                       cursor: 'pointer',
@@ -634,14 +630,14 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
                       textTransform: 'capitalize'
                     }}
                   >
-                    {length}
+                    {depth}
                   </button>
                 ))}
               </div>
               <p style={{ fontSize: '12px', color: '#6b7280', marginTop: '8px' }}>
-                {reportLength === 'short' && '~500 words - Quick overview'}
-                {reportLength === 'medium' && '~1,500 words - Standard report'}
-                {reportLength === 'long' && '~3,000 words - Comprehensive analysis'}
+                {reportDepth === 'brief' && 'High-level overview with key findings'}
+                {reportDepth === 'standard' && 'Balanced analysis with important details'}
+                {reportDepth === 'comprehensive' && 'In-depth documentation and extensive analysis'}
               </p>
             </div>
 
