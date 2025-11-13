@@ -350,57 +350,92 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
                 </button>
                 <button
                   onClick={async () => {
-                    const { Document, Packer, Paragraph, TextRun, HeadingLevel } = await import('docx');
                     const { marked } = await import('marked');
                     
-                    // Parse markdown to tokens
-                    const tokens = marked.lexer(generatedReport);
-                    const paragraphs: any[] = [];
+                    // Convert markdown to HTML
+                    const htmlContent = await marked(generatedReport);
                     
-                    // Convert markdown tokens to docx paragraphs
-                    for (const token of tokens) {
-                      if (token.type === 'heading') {
-                        const level = token.depth === 1 ? HeadingLevel.HEADING_1 : 
-                                     token.depth === 2 ? HeadingLevel.HEADING_2 : HeadingLevel.HEADING_3;
-                        paragraphs.push(
-                          new Paragraph({
-                            text: token.text,
-                            heading: level,
-                          })
-                        );
-                      } else if (token.type === 'paragraph') {
-                        // Simple text run (can be enhanced to parse inline markdown)
-                        paragraphs.push(
-                          new Paragraph({
-                            children: [new TextRun(token.text)],
-                          })
-                        );
-                      } else if (token.type === 'list') {
-                        token.items.forEach((item: any) => {
-                          paragraphs.push(
-                            new Paragraph({
-                              text: item.text,
-                              bullet: { level: 0 },
-                            })
-                          );
-                        });
-                      }
-                    }
+                    // Create a complete HTML document with same styling as display
+                    const styledHTML = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Museum Report</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      line-height: 1.6;
+      padding: 40px;
+      max-width: 1000px;
+      margin: 0 auto;
+      background: #ffffff;
+      color: #374151;
+    }
+    h1 {
+      font-size: 28px;
+      font-weight: 700;
+      margin-top: 24px;
+      margin-bottom: 16px;
+      color: #1f2937;
+    }
+    h2 {
+      font-size: 24px;
+      font-weight: 600;
+      margin-top: 20px;
+      margin-bottom: 12px;
+      color: #374151;
+    }
+    h3 {
+      font-size: 20px;
+      font-weight: 600;
+      margin-top: 16px;
+      margin-bottom: 10px;
+      color: #4b5563;
+    }
+    h4 {
+      font-size: 18px;
+      font-weight: 600;
+      margin-top: 14px;
+      margin-bottom: 8px;
+      color: #6b7280;
+    }
+    p {
+      margin-top: 12px;
+      margin-bottom: 12px;
+      color: #374151;
+    }
+    ul, ol {
+      margin-left: 24px;
+      margin-top: 8px;
+      margin-bottom: 8px;
+    }
+    li {
+      margin-top: 6px;
+      margin-bottom: 6px;
+      padding-left: 8px;
+    }
+    strong {
+      font-weight: 700;
+      color: #1f2937;
+    }
+    @media print {
+      body { padding: 20px; }
+    }
+  </style>
+</head>
+<body>
+${htmlContent}
+</body>
+</html>`;
                     
-                    // Create document
-                    const doc = new Document({
-                      sections: [{
-                        properties: {},
-                        children: paragraphs,
-                      }],
-                    });
-                    
-                    // Generate and download
-                    const blob = await Packer.toBlob(doc);
+                    // Create blob and download as .doc (HTML format that Word opens)
+                    const blob = new Blob([styledHTML], { type: 'application/msword' });
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement('a');
                     a.href = url;
-                    a.download = `museum-report-${Date.now()}.docx`;
+                    a.download = `museum-report-${Date.now()}.doc`;
                     a.click();
                     URL.revokeObjectURL(url);
                   }}
@@ -414,7 +449,7 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
                     fontSize: '14px'
                   }}
                 >
-                  💾 Download (.docx)
+                  💾 Download (.doc)
                 </button>
                 <button
                   onClick={() => setShowReportModal(true)}
