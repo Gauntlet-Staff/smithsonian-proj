@@ -10,9 +10,12 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "docx": "^9.5.1",
     "firebase": "^12.4.0",
+    "marked": "^17.0.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
+    "react-markdown": "^10.1.0",
     "tesseract.js": "^6.0.1"
   },
   "devDependencies": {

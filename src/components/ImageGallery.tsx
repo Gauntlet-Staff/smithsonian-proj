@@ -3,6 +3,7 @@ import { collection, query, where, orderBy, onSnapshot, Timestamp, addDoc, doc }
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import '../styles/ImageGallery.css';
+import ReactMarkdown from 'react-markdown';
 
 import { deleteDoc } from 'firebase/firestore';
 import { ref, deleteObject } from 'firebase/storage';
@@ -348,12 +349,58 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
                   📋 Copy
                 </button>
                 <button
-                  onClick={() => {
-                    const blob = new Blob([generatedReport], { type: 'text/plain' });
+                  onClick={async () => {
+                    const { Document, Packer, Paragraph, TextRun, HeadingLevel } = await import('docx');
+                    const { marked } = await import('marked');
+                    
+                    // Parse markdown to tokens
+                    const tokens = marked.lexer(generatedReport);
+                    const paragraphs: any[] = [];
+                    
+                    // Convert markdown tokens to docx paragraphs
+                    for (const token of tokens) {
+                      if (token.type === 'heading') {
+                        const level = token.depth === 1 ? HeadingLevel.HEADING_1 : 
+                                     token.depth === 2 ? HeadingLevel.HEADING_2 : HeadingLevel.HEADING_3;
+                        paragraphs.push(
+                          new Paragraph({
+                            text: token.text,
+                            heading: level,
+                          })
+                        );
+                      } else if (token.type === 'paragraph') {
+                        // Simple text run (can be enhanced to parse inline markdown)
+                        paragraphs.push(
+                          new Paragraph({
+                            children: [new TextRun(token.text)],
+                          })
+                        );
+                      } else if (token.type === 'list') {
+                        token.items.forEach((item: any) => {
+                          paragraphs.push(
+                            new Paragraph({
+                              text: item.text,
+                              bullet: { level: 0 },
+                            })
+                          );
+                        });
+                      }
+                    }
+                    
+                    // Create document
+                    const doc = new Document({
+                      sections: [{
+                        properties: {},
+                        children: paragraphs,
+                      }],
+                    });
+                    
+                    // Generate and download
+                    const blob = await Packer.toBlob(doc);
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement('a');
                     a.href = url;
-                    a.download = `museum-report-${Date.now()}.txt`;
+                    a.download = `museum-report-${Date.now()}.docx`;
                     a.click();
                     URL.revokeObjectURL(url);
                   }}
@@ -367,7 +414,7 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
                     fontSize: '14px'
                   }}
                 >
-                  💾 Download
+                  💾 Download (.docx)
                 </button>
                 <button
                   onClick={() => setShowReportModal(true)}
@@ -400,7 +447,6 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
               </div>
             </div>
             <div style={{
-              whiteSpace: 'pre-wrap',
               background: '#f9fafb',
               padding: '16px',
               borderRadius: '8px',
@@ -410,7 +456,7 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
               overflowY: 'auto',
               border: '1px solid #e5e7eb'
             }}>
-              {generatedReport}
+              <ReactMarkdown>{generatedReport}</ReactMarkdown>
             </div>
           </div>
         )} {/* Generated report ends here */}
