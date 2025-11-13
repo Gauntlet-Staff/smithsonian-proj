@@ -111,6 +111,10 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
         const mostRecentReport = snapshot.docs[0].data();
         if (mostRecentReport.report) {
           setGeneratedReport(mostRecentReport.report);
+          // Restore selected images from the report
+          if (mostRecentReport.imageIds && Array.isArray(mostRecentReport.imageIds)) {
+            setSelectedImageIds(new Set(mostRecentReport.imageIds));
+          }
         }
       }
     });
