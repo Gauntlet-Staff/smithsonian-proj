@@ -34,6 +34,9 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
   const [generating, setGenerating] = useState(false);
   const [generatedReport, setGeneratedReport] = useState<string>('');
   const [currentReportId, setCurrentReportId] = useState<string | null>(null);
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [reportLength, setReportLength] = useState<'short' | 'medium' | 'long'>('medium');
+  const [reportStyle, setReportStyle] = useState<'casual' | 'professional' | 'academic'>('professional');
   const { currentUser } = useAuth();
 
   useEffect(() => {
@@ -102,6 +105,7 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
   const handleGenerateReport = async () => {
     if (selectedImageIds.size === 0 || !reportPrompt.trim() || !currentUser) return;
     
+    setShowReportModal(false); // Close modal
     setGenerating(true);
     setGeneratedReport(''); // Clear previous report
     
@@ -112,12 +116,18 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
         `--- ${img.fileName} ---\n${img.extractedText}\n`
       ).join('\n');
       
+      // Map length to max tokens
+      const maxTokensMap = { short: 500, medium: 1500, long: 3000 };
+      
       // Create a report document in Firestore - this triggers the Cloud Function
       const reportRef = await addDoc(collection(db, 'reports'), {
         userId: currentUser.uid,
         combinedTexts,
         prompt: reportPrompt,
         imageIds: Array.from(selectedImageIds),
+        reportLength,
+        reportStyle,
+        maxTokens: maxTokensMap[reportLength],
         status: 'pending',
         createdAt: new Date()
       });
@@ -247,52 +257,37 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
           </div>
         )}
 
-        {/* Report generation button starts here */}
+        {/* Configure Report button */}
         {selectedImageIds.size > 0 && (
           <div style={{
             padding: '20px',
             background: '#f9fafb',
-            borderBottom: '1px solid #e5e7eb'
+            borderBottom: '1px solid #e5e7eb',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px'
           }}>
-            <h3 style={{ marginBottom: '12px', fontSize: '16px', fontWeight: 600 }}>
-              Generate Report from {selectedImageIds.size} Image{selectedImageIds.size > 1 ? 's' : ''}
-            </h3>
-
-            <textarea
-              value={reportPrompt}
-              onChange={(e) => setReportPrompt(e.target.value)}
-              placeholder="Enter your custom prompt for the report. Example: 'Analyze these museum exhibits and create a comprehensive report highlighting historical significance, physical condition, and recommendations for preservation.'"
-              style={{
-                width: '100%',
-                minHeight: '100px',
-                padding: '12px',
-                borderRadius: '6px',
-                border: '1px solid #d1d5db',
-                fontSize: '14px',
-                fontFamily: 'inherit',
-                resize: 'vertical',
-                marginBottom: '12px'
-              }}
-            />
-
             <button
-              onClick={handleGenerateReport}
-              disabled={generating || !reportPrompt.trim()}
+              onClick={() => setShowReportModal(true)}
+              disabled={generating}
               style={{
-                padding: '10px 20px',
-                background: generating || !reportPrompt.trim() ? '#9ca3af' : '#10b981',
+                padding: '12px 24px',
+                background: generating ? '#9ca3af' : '#10b981',
                 color: 'white',
                 border: 'none',
                 borderRadius: '6px',
-                cursor: generating || !reportPrompt.trim() ? 'not-allowed' : 'pointer',
-                fontSize: '14px',
+                cursor: generating ? 'not-allowed' : 'pointer',
+                fontSize: '16px',
                 fontWeight: 600
               }}
             >
-              {generating ? '🔄 Generating Report...' : '📄 Generate Report'}
+              {generating ? '🔄 Generating Report...' : '📄 Configure Report'}
             </button>
+            <span style={{ color: '#6b7280', fontSize: '14px' }}>
+              {selectedImageIds.size} image{selectedImageIds.size > 1 ? 's' : ''} selected
+            </span>
           </div>
-        )} {/* Report generation button ends here */}
+        )}
 
         {generatedReport && ( // Generated report starts here
           <div style={{
@@ -342,6 +337,20 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
                   }}
                 >
                   💾 Download
+                </button>
+                <button
+                  onClick={() => setShowReportModal(true)}
+                  style={{
+                    padding: '8px 16px',
+                    background: '#8b5cf6',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    fontSize: '14px'
+                  }}
+                >
+                  🔄 Regenerate
                 </button>
                 <button
                   onClick={() => setGeneratedReport('')}
@@ -544,7 +553,162 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
           </div>
         </div>
       )}
-    </>
-  );
-}
+
+      {/* Report Configuration Modal */}
+      {showReportModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0, 0, 0, 0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
+        }} onClick={() => setShowReportModal(false)}>
+          <div style={{
+            background: 'white',
+            borderRadius: '12px',
+            padding: '32px',
+            maxWidth: '600px',
+            width: '90%',
+            maxHeight: '90vh',
+            overflowY: 'auto'
+          }} onClick={(e) => e.stopPropagation()}>
+            <h2 style={{ marginBottom: '24px', fontSize: '24px', fontWeight: 600 }}>
+              📄 Configure Report
+            </h2>
+
+            {/* Prompt Textarea */}
+            <div style={{ marginBottom: '24px' }}>
+              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 500, fontSize: '14px' }}>
+                Report Prompt
+              </label>
+              <textarea
+                value={reportPrompt}
+                onChange={(e) => setReportPrompt(e.target.value)}
+                placeholder="Enter your custom prompt for the report..."
+                style={{
+                  width: '100%',
+                  minHeight: '120px',
+                  padding: '12px',
+                  borderRadius: '6px',
+                  border: '1px solid #d1d5db',
+                  fontSize: '14px',
+                  fontFamily: 'inherit',
+                  resize: 'vertical'
+                }}
+              />
+            </div>
+
+            {/* Report Length Slider */}
+            <div style={{ marginBottom: '24px' }}>
+              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 500, fontSize: '14px' }}>
+                📏 Report Length: <span style={{ color: '#6b7280', textTransform: 'capitalize' }}>{reportLength}</span>
+              </label>
+              <div style={{ display: 'flex', gap: '12px', marginTop: '12px' }}>
+                {['short', 'medium', 'long'].map((length) => (
+                  <button
+                    key={length}
+                    onClick={() => setReportLength(length as 'short' | 'medium' | 'long')}
+                    style={{
+                      flex: 1,
+                      padding: '12px',
+                      background: reportLength === length ? '#10b981' : '#f3f4f6',
+                      color: reportLength === length ? 'white' : '#374151',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontSize: '14px',
+                      fontWeight: 500,
+                      textTransform: 'capitalize'
+                    }}
+                  >
+                    {length}
+                  </button>
+                ))}
+              </div>
+              <p style={{ fontSize: '12px', color: '#6b7280', marginTop: '8px' }}>
+                {reportLength === 'short' && '~500 words - Quick overview'}
+                {reportLength === 'medium' && '~1,500 words - Standard report'}
+                {reportLength === 'long' && '~3,000 words - Comprehensive analysis'}
+              </p>
+            </div>
+
+            {/* Report Style Selector */}
+            <div style={{ marginBottom: '24px' }}>
+              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 500, fontSize: '14px' }}>
+                📝 Report Style: <span style={{ color: '#6b7280', textTransform: 'capitalize' }}>{reportStyle}</span>
+              </label>
+              <div style={{ display: 'flex', gap: '12px', marginTop: '12px' }}>
+                {['casual', 'professional', 'academic'].map((style) => (
+                  <button
+                    key={style}
+                    onClick={() => setReportStyle(style as 'casual' | 'professional' | 'academic')}
+                    style={{
+                      flex: 1,
+                      padding: '12px',
+                      background: reportStyle === style ? '#3b82f6' : '#f3f4f6',
+                      color: reportStyle === style ? 'white' : '#374151',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontSize: '14px',
+                      fontWeight: 500,
+                      textTransform: 'capitalize'
+                    }}
+                  >
+                    {style}
+                  </button>
+                ))}
+              </div>
+              <p style={{ fontSize: '12px', color: '#6b7280', marginTop: '8px' }}>
+                {reportStyle === 'casual' && 'Easy to read, conversational tone'}
+                {reportStyle === 'professional' && 'Balanced, museum-standard language'}
+                {reportStyle === 'academic' && 'Formal, scholarly terminology'}
+              </p>
+            </div>
+
+            {/* Action Buttons */}
+            <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setShowReportModal(false)}
+                style={{
+                  padding: '10px 20px',
+                  background: '#f3f4f6',
+                  color: '#374151',
+                  border: 'none',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  fontWeight: 500
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleGenerateReport}
+                disabled={!reportPrompt.trim()}
+                style={{
+                  padding: '10px 20px',
+                  background: !reportPrompt.trim() ? '#9ca3af' : '#10b981',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '6px',
+                  cursor: !reportPrompt.trim() ? 'not-allowed' : 'pointer',
+                  fontSize: '14px',
+                  fontWeight: 600
+                }}
+              >
+                📄 Generate Report
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      </>
+    );
+  }
 

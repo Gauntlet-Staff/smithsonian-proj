@@ -254,7 +254,7 @@ export const generateReport = onDocumentCreated(
       return;
     }
 
-    const {combinedTexts, prompt, userId} = data;
+    const {combinedTexts, prompt, userId, reportStyle, maxTokens} = data;
 
     // Validate inputs
     if (!combinedTexts || !prompt || !userId) {
@@ -276,6 +276,8 @@ export const generateReport = onDocumentCreated(
       logger.info("Generating report for combined texts", {
         textLength: combinedTexts.length,
         promptLength: prompt.length,
+        reportStyle: reportStyle || "professional",
+        maxTokens: maxTokens || 1500,
       });
 
       // Initialize OpenAI
@@ -283,20 +285,30 @@ export const generateReport = onDocumentCreated(
         apiKey: openaiApiKey.value(),
       });
 
+      // Adjust system prompt based on report style
+      const stylePrompts = {
+        casual: "You are a friendly museum guide. Write in a conversational, easy-to-understand tone that engages general audiences. Use simple language and relatable examples.",
+        professional: "You are a professional museum curator and report writer. Generate detailed, well-structured reports using standard museum terminology and balanced language.",
+        academic: "You are a scholarly museum researcher. Write in a formal, academic tone using precise terminology and citations. Include detailed analysis appropriate for academic audiences.",
+      };
+
+      const systemPrompt = stylePrompts[reportStyle as keyof typeof stylePrompts] ||
+        stylePrompts.professional;
+
       // Call GPT-4 to generate comprehensive report
       const response = await openai.chat.completions.create({
         model: "gpt-4o",
         messages: [
           {
             role: "system",
-            content: "You are a professional museum curator and report writer. Generate detailed, well-structured reports based on the provided exhibit descriptions.",
+            content: systemPrompt,
           },
           {
             role: "user",
             content: `${prompt}\n\nHere are the extracted texts from multiple museum exhibits:\n\n${combinedTexts}`,
           },
         ],
-        max_tokens: 4000,
+        max_tokens: maxTokens || 1500,
         temperature: 0.7,
       });
 
