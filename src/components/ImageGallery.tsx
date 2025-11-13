@@ -95,6 +95,29 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
     return () => unsubscribe();
   }, [currentReportId]);
 
+  // Load most recent completed report on mount
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const q = query(
+      collection(db, 'reports'),
+      where('userId', '==', currentUser.uid),
+      where('status', '==', 'completed'),
+      orderBy('createdAt', 'desc')
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      if (!snapshot.empty) {
+        const mostRecentReport = snapshot.docs[0].data();
+        if (mostRecentReport.report) {
+          setGeneratedReport(mostRecentReport.report);
+        }
+      }
+    });
+
+    return () => unsubscribe();
+  }, [currentUser]);
+
   const formatFileSize = (bytes: number): string => {
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
