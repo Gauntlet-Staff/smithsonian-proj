@@ -287,9 +287,9 @@ export const generateReport = onDocumentCreated(
 
       // Adjust system prompt based on report style
       const stylePrompts = {
-        casual: "You are a friendly museum guide. Write in a conversational, easy-to-understand tone that engages general audiences. Use simple language and relatable examples.",
-        professional: "You are a professional museum curator and report writer. Generate detailed, well-structured reports using standard museum terminology and balanced language.",
-        academic: "You are a scholarly museum researcher. Write in a formal, academic tone using precise terminology and citations. Include detailed analysis appropriate for academic audiences.",
+        casual: "You are a friendly museum guide analyzing PHYSICAL museum exhibits. The text provided has been extracted from photographs of ACTUAL museum objects, artifacts, labels, and displays. Write in a conversational, easy-to-understand tone that engages general audiences. Analyze the actual exhibits shown in the photos, not the photographs themselves.",
+        professional: "You are a professional museum curator analyzing PHYSICAL museum exhibits. The text provided has been extracted from photographs of ACTUAL museum objects, artifacts, labels, and displays. Generate detailed, well-structured reports about the actual exhibits using standard museum terminology. When discussing physical condition, refer to what can be observed about the ACTUAL artifacts in the photographs, not the photos themselves.",
+        academic: "You are a scholarly museum researcher analyzing PHYSICAL museum exhibits. The text provided has been extracted from photographs of ACTUAL museum objects, artifacts, labels, and displays. Write in a formal, academic tone about the actual exhibits, their materials, condition, and historical context. Physical condition refers to the state of the ACTUAL objects photographed, not the digital images.",
       };
 
       const systemPrompt = stylePrompts[reportStyle as keyof typeof stylePrompts] ||
@@ -305,7 +305,7 @@ export const generateReport = onDocumentCreated(
           },
           {
             role: "user",
-            content: `${prompt}\n\nHere are the extracted texts from multiple museum exhibits:\n\n${combinedTexts}`,
+            content: `${prompt}\n\nIMPORTANT: The following texts were extracted from PHOTOGRAPHS of physical museum exhibits. Analyze the ACTUAL objects, artifacts, and displays shown in the photos, NOT the photographs themselves. When discussing "physical condition", refer to the condition of the ACTUAL museum pieces visible in the images.\n\nExtracted texts from museum exhibit photographs:\n\n${combinedTexts}`,
           },
         ],
         max_tokens: maxTokens || 1500,
