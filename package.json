@@ -10,7 +10,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "docx": "^9.5.1",
     "firebase": "^12.4.0",
     "marked": "^17.0.0",
     "react": "^19.1.1",
