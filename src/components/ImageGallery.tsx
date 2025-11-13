@@ -110,11 +110,18 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
     setGeneratedReport(''); // Clear previous report
     
     try {
-      // Get all selected images with their extracted text
+      // Get all selected images with their extracted text and URLs
       const selectedImages = images.filter(img => selectedImageIds.has(img.id));
       const combinedTexts = selectedImages.map(img => 
         `--- ${img.fileName} ---\n${img.extractedText}\n`
       ).join('\n');
+      
+      // Prepare image data for Vision analysis
+      const imageData = selectedImages.map(img => ({
+        fileName: img.fileName,
+        imageUrl: img.imageUrl,
+        extractedText: img.extractedText
+      }));
       
       // Map length to max tokens
       const maxTokensMap = { short: 500, medium: 1500, long: 3000 };
@@ -123,6 +130,7 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
       const reportRef = await addDoc(collection(db, 'reports'), {
         userId: currentUser.uid,
         combinedTexts,
+        imageData, // Pass images for Vision analysis
         prompt: reportPrompt,
         imageIds: Array.from(selectedImageIds),
         reportLength,

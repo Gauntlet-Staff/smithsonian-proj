@@ -254,14 +254,14 @@ export const generateReport = onDocumentCreated(
       return;
     }
 
-    const {combinedTexts, prompt, userId, reportStyle, maxTokens} = data;
+    const {combinedTexts, prompt, userId, reportStyle, maxTokens, imageData} = data;
 
     // Validate inputs
-    if (!combinedTexts || !prompt || !userId) {
-      logger.error("Missing required fields", {reportId, combinedTexts, prompt, userId});
+    if (!combinedTexts || !prompt || !userId || !imageData || !Array.isArray(imageData)) {
+      logger.error("Missing required fields", {reportId, combinedTexts, prompt, userId, hasImageData: !!imageData});
       await snapshot.ref.update({
         status: "failed",
-        error: "Missing required fields",
+        error: "Missing required fields or image data",
         completedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
       return;
@@ -273,11 +273,12 @@ export const generateReport = onDocumentCreated(
         status: "processing",
       });
 
-      logger.info("Generating report for combined texts", {
+      logger.info("Generating report with vision analysis", {
         textLength: combinedTexts.length,
         promptLength: prompt.length,
         reportStyle: reportStyle || "professional",
         maxTokens: maxTokens || 1500,
+        imageCount: imageData.length,
       });
 
       // Initialize OpenAI
@@ -285,17 +286,64 @@ export const generateReport = onDocumentCreated(
         apiKey: openaiApiKey.value(),
       });
 
+      // Download images and convert to base64
+      const bucket = admin.storage().bucket();
+      const imageContents: Array<{type: "image_url"; image_url: {url: string}}> = [];
+
+      for (const img of imageData) {
+        try {
+          // Extract storage path from URL
+          const fileName = img.imageUrl.split("/").pop()?.split("?")[0];
+          const decodedFileName = decodeURIComponent(fileName || "");
+          const storagePath = decodedFileName.replace(`${bucket.name}/`, "");
+
+          // Download image
+          const file = bucket.file(storagePath);
+          const [fileBuffer] = await file.download();
+          const base64Image = fileBuffer.toString("base64");
+
+          // Determine MIME type
+          let mimeType = "image/jpeg";
+          if (img.fileName.toLowerCase().endsWith(".png")) {
+            mimeType = "image/png";
+          } else if (img.fileName.toLowerCase().endsWith(".webp")) {
+            mimeType = "image/webp";
+          }
+
+          imageContents.push({
+            type: "image_url",
+            image_url: {
+              url: `data:${mimeType};base64,${base64Image}`,
+            },
+          });
+        } catch (error) {
+          logger.error(`Failed to download image ${img.fileName}:`, error);
+        }
+      }
+
       // Adjust system prompt based on report style
       const stylePrompts = {
-        casual: "You are a friendly museum guide analyzing PHYSICAL museum exhibits. The text provided has been extracted from photographs of ACTUAL museum objects, artifacts, labels, and displays. Write in a conversational, easy-to-understand tone that engages general audiences. Analyze the actual exhibits shown in the photos, not the photographs themselves.",
-        professional: "You are a professional museum curator analyzing PHYSICAL museum exhibits. The text provided has been extracted from photographs of ACTUAL museum objects, artifacts, labels, and displays. Generate detailed, well-structured reports about the actual exhibits using standard museum terminology. When discussing physical condition, refer to what can be observed about the ACTUAL artifacts in the photographs, not the photos themselves.",
-        academic: "You are a scholarly museum researcher analyzing PHYSICAL museum exhibits. The text provided has been extracted from photographs of ACTUAL museum objects, artifacts, labels, and displays. Write in a formal, academic tone about the actual exhibits, their materials, condition, and historical context. Physical condition refers to the state of the ACTUAL objects photographed, not the digital images.",
+        casual: "You are a friendly museum guide analyzing PHYSICAL museum exhibits from photographs. You can SEE the actual artifacts, objects, and displays. Write in a conversational tone. Analyze what you SEE in the images: materials, condition, wear, damage, colors, etc.",
+        professional: "You are a professional museum curator analyzing PHYSICAL museum exhibits from photographs. You can SEE the actual artifacts. Use your visual analysis to assess: Historical Significance, Physical Condition (materials, wear, deterioration), and Preservation Recommendations. Be specific about what you observe visually.",
+        academic: "You are a scholarly museum researcher analyzing PHYSICAL museum exhibits from photographs. You can SEE the actual objects. Provide formal analysis of: materials, manufacturing techniques, condition assessment, deterioration patterns, and conservation requirements based on visual evidence.",
       };
 
       const systemPrompt = stylePrompts[reportStyle as keyof typeof stylePrompts] ||
         stylePrompts.professional;
 
-      // Call GPT-4 to generate comprehensive report
+      // Build message content with images and text
+      const userContent: Array<
+        {type: "image_url"; image_url: {url: string}} |
+        {type: "text"; text: string}
+      > = [
+        ...imageContents,
+        {
+          type: "text",
+          text: `${prompt}\n\nYou are viewing PHOTOGRAPHS of physical museum exhibits. Analyze the ACTUAL objects you see in these images.\n\nFor each exhibit, assess:\n1. **Historical Significance** - What is it? When is it from? Why is it important?\n2. **Physical Condition** - What materials do you see? What is the condition? Any damage, fading, wear?\n3. **Preservation Recommendations** - Based on what you observe, what conservation is needed?\n\nThe text has already been extracted from these images:\n\n${combinedTexts}\n\nUse this text along with your VISUAL analysis of the images to generate a comprehensive museum report.`,
+        },
+      ];
+
+      // Call GPT-4o Vision to generate comprehensive report
       const response = await openai.chat.completions.create({
         model: "gpt-4o",
         messages: [
@@ -305,7 +353,7 @@ export const generateReport = onDocumentCreated(
           },
           {
             role: "user",
-            content: `${prompt}\n\nIMPORTANT: The following texts were extracted from PHOTOGRAPHS of physical museum exhibits. Analyze the ACTUAL objects, artifacts, and displays shown in the photos, NOT the photographs themselves. When discussing "physical condition", refer to the condition of the ACTUAL museum pieces visible in the images.\n\nExtracted texts from museum exhibit photographs:\n\n${combinedTexts}`,
+            content: userContent,
           },
         ],
         max_tokens: maxTokens || 1500,
