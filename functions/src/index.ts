@@ -226,15 +226,231 @@ export const retryTextExtraction = onCall(
   }
 );
 
+// Helper function: Sleep/delay
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Helper function: Normalize report formatting
+function normalizeReportFormatting(report: string): string {
+  return report
+    // Standardize "Exhibit #X" to "**EXHIBIT X**" (all caps, remove #, add bold)
+    .replace(/\*{0,2}Exhibit\s*#?\s*(\d+)\*{0,2}/gi, "**EXHIBIT $1**")
+    // Split sub-headers that are on the same line (e.g., "Date: text Significance: text")
+    .replace(/\*{0,2}(Date|Significance|Materials|Condition|Recommendations):\*{0,2}\s*([^\n]+?)\s+\*{0,2}(Title|Date|Significance|Materials|Condition|Recommendations):/gi,
+      "**$1:** $2\n\n**$3:")
+    // Remove numbered list prefixes from section headers (1., 2., 3., etc.) - with or without colon
+    .replace(/^\s*\d+\.\s+(Historical Significance:?|Physical Condition:?|Preservation:?)/gmi, "$1")
+    // Remove bullet point prefixes from section headers (•, -, *, etc.) - with or without colon
+    .replace(/^\s*[•\-*]\s+(Historical Significance:?|Physical Condition:?|Preservation:?)/gmi, "$1")
+    // Ensure consistent format: no colons after section headers
+    .replace(/^(Historical Significance|Physical Condition|Preservation):\s*/gmi, "$1\n\n")
+    // Also catch colons in the middle of lines
+    .replace(/(Historical Significance|Physical Condition|Preservation):\s*/gi, "$1\n\n");
+}
+
+// Helper function: Save report (to Storage if large, Firestore if small)
+async function saveReport(
+  reportText: string,
+  reportId: string,
+  bucket: any
+): Promise<{reportUrl?: string; report?: string}> {
+  const reportSizeBytes = Buffer.byteLength(reportText, "utf8");
+  const MAX_FIRESTORE_SIZE = 900 * 1024; // 900 KB (safe threshold below 1 MB limit)
+
+  logger.info(`Report size: ${reportSizeBytes} bytes (${(reportSizeBytes / 1024).toFixed(2)} KB)`);
+
+  if (reportSizeBytes > MAX_FIRESTORE_SIZE) {
+    // Large report - upload to Storage
+    logger.info("Report exceeds Firestore limit, uploading to Storage");
+    
+    const fileName = `reports/${reportId}.txt`;
+    const file = bucket.file(fileName);
+    
+    await file.save(reportText, {
+      contentType: "text/plain; charset=utf-8",
+      metadata: {
+        metadata: {
+          generatedAt: new Date().toISOString(),
+        },
+      },
+    });
+
+    // Make file publicly readable (only for authenticated users via security rules)
+    await file.makePublic();
+    
+    // Get public URL
+    const reportUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
+    logger.info(`Report uploaded to Storage: ${reportUrl}`);
+    
+    return {reportUrl};
+  } else {
+    // Small report - save directly to Firestore
+    logger.info("Report fits in Firestore, saving directly");
+    return {report: reportText};
+  }
+}
+
+// Helper function: Process a single batch of images
+async function processBatch(
+  batch: Array<{
+    imageUrl: string;
+    fileName: string;
+    extractedText: string;
+    index: number;
+  }>,
+  batchIndex: number,
+  prompt: string,
+  reportStyle: string,
+  reportDepth: string,
+  openai: OpenAI,
+  bucket: any
+): Promise<{batchIndex: number; report: string; success: boolean; error?: string}> {
+  try {
+    logger.info(`Processing batch ${batchIndex + 1}`, {
+      batchSize: batch.length,
+      startIndex: batch[0].index,
+      endIndex: batch[batch.length - 1].index,
+    });
+
+    // Download images and convert to base64
+    const imageContents: Array<{type: "image_url"; image_url: {url: string}}> = [];
+    const batchTexts: string[] = [];
+
+    for (const img of batch) {
+      try {
+        // Extract storage path from URL
+        const fileName = img.imageUrl.split("/").pop()?.split("?")[0];
+        const decodedFileName = decodeURIComponent(fileName || "");
+        const storagePath = decodedFileName.replace(`${bucket.name}/`, "");
+
+        // Download image
+        const file = bucket.file(storagePath);
+        const [fileBuffer] = await file.download();
+        const base64Image = fileBuffer.toString("base64");
+
+        // Determine MIME type
+        let mimeType = "image/jpeg";
+        if (img.fileName.toLowerCase().endsWith(".png")) {
+          mimeType = "image/png";
+        } else if (img.fileName.toLowerCase().endsWith(".webp")) {
+          mimeType = "image/webp";
+        }
+
+        imageContents.push({
+          type: "image_url",
+          image_url: {
+            url: `data:${mimeType};base64,${base64Image}`,
+          },
+        });
+
+        batchTexts.push(`[Image ${img.index + 1}]: ${img.extractedText}`);
+      } catch (error) {
+        logger.error(`Failed to download image ${img.fileName}:`, error);
+      }
+    }
+
+    // System prompt for batch processing with STRICT template
+    const depthGuidance = {
+      brief: "Be concise and focus on key findings.",
+      standard: "Provide balanced analysis with important details.",
+      comprehensive: "Be thorough and detailed in your analysis.",
+    };
+
+    const systemPrompt = `You are analyzing museum exhibits. For EACH exhibit, you MUST follow this EXACT format with EACH item on a NEW LINE:
+
+---
+
+**EXHIBIT [NUMBER]**
+
+**Title:** [Object name/title]
+
+**Historical Significance**
+
+**Date:** [Time period or date]
+**Significance:** [Why is it important?]
+
+**Physical Condition**
+
+**Materials:** [What is it made of?]
+**Condition:** [Current state - wear, damage, fading, etc.]
+
+**Preservation**
+
+**Recommendations:** [How to preserve and store it]
+
+---
+
+CRITICAL RULES:
+- "EXHIBIT [NUMBER]" must be ALL CAPS and **bold**
+- "Title:" appears BEFORE Historical Significance section
+- Use **bold** for ALL headers and sub-headers
+- Each sub-heading MUST be on its OWN line
+- NO numbering (1., 2., 3.) before section headings
+- ${depthGuidance[reportDepth as keyof typeof depthGuidance] || depthGuidance.standard}
+- Maintain exact sequence order`;
+
+    // Build message content
+    const userContent: Array<
+      {type: "image_url"; image_url: {url: string}} |
+      {type: "text"; text: string}
+    > = [
+      ...imageContents,
+      {
+        type: "text",
+        text: `${prompt}\n\nAnalyze these ${batch.length} physical museum exhibits in ORDER.\n\nExtracted text:\n${batchTexts.join("\n\n")}\n\nGenerate a report for exhibits ${batch[0].index + 1} to ${batch[batch.length - 1].index + 1}.`,
+      },
+    ];
+
+    // Call GPT-4o Vision
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [
+        {
+          role: "system",
+          content: systemPrompt,
+        },
+        {
+          role: "user",
+          content: userContent,
+        },
+      ],
+      max_tokens: 4000,
+      temperature: 0.7,
+    });
+
+    const report = response.choices[0]?.message?.content || "";
+
+    logger.info(`Batch ${batchIndex + 1} completed successfully`);
+
+    return {
+      batchIndex,
+      report,
+      success: true,
+    };
+  } catch (error: unknown) {
+    const err = error as Error;
+    logger.error(`Batch ${batchIndex + 1} failed:`, err);
+    return {
+      batchIndex,
+      report: "",
+      success: false,
+      error: err.message,
+    };
+  }
+}
+
 /**
  * Cloud Function triggered when a new report document is created in Firestore
  * Automatically generates comprehensive reports from multiple images using GPT-4
+ * Uses parallel batch processing for large image sets (500+ images)
  */
 export const generateReport = onDocumentCreated(
   {
     document: "reports/{reportId}",
     region: "us-central1",
     secrets: [openaiApiKey],
+    timeoutSeconds: 540, // 9 minutes (max for Cloud Functions)
+    memory: "1GiB",
+    minInstances: 0, // Force redeploy - Storage support added
   },
   async (event) => {
     const snapshot = event.data;
@@ -254,11 +470,11 @@ export const generateReport = onDocumentCreated(
       return;
     }
 
-    const {combinedTexts, prompt, userId, reportStyle, reportDepth, imageData} = data;
+    const {imageIds, prompt, userId, reportStyle, reportDepth} = data;
 
     // Validate inputs
-    if (!combinedTexts || !prompt || !userId || !imageData || !Array.isArray(imageData)) {
-      logger.error("Missing required fields", {reportId, combinedTexts, prompt, userId, hasImageData: !!imageData});
+    if (!imageIds || !prompt || !userId || !Array.isArray(imageIds) || imageIds.length === 0) {
+      logger.error("Missing required fields", {reportId, prompt, userId, hasImageIds: !!imageIds, imageIdsLength: imageIds?.length});
       await snapshot.ref.update({
         status: "failed",
         error: "Missing required fields or image data",
@@ -267,10 +483,55 @@ export const generateReport = onDocumentCreated(
       return;
     }
 
+    const imageCount = imageIds.length;
+
+    // Fetch image data from Firestore
+    logger.info(`Fetching data for ${imageCount} images from Firestore`);
+    const imageDataPromises = imageIds.map(async (imageId: string, index: number) => {
+      const imageDoc = await admin.firestore().collection("images").doc(imageId).get();
+      const imageData = imageDoc.data();
+      if (!imageData) {
+        logger.warn(`Image ${imageId} not found in Firestore`);
+        return null;
+      }
+      return {
+        fileName: imageData.fileName,
+        imageUrl: imageData.imageUrl,
+        extractedText: imageData.extractedText || "No text extracted",
+        index: index, // Preserve sequence order
+      };
+    });
+
+    const imageDataResults = await Promise.all(imageDataPromises);
+    const imageData = imageDataResults.filter(img => img !== null) as Array<{fileName: string; imageUrl: string; extractedText: string; index: number}>;
+
+    if (imageData.length === 0) {
+      logger.error("No valid images found");
+      await snapshot.ref.update({
+        status: "failed",
+        error: "No valid images found",
+        completedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      return;
+    }
+
+    // Build combined texts from fetched image data
+    const combinedTexts = imageData.map((img, index) =>
+      `--- ${img.fileName} ---\n${img.extractedText}\n`
+    ).join("\n");
+
+    const BATCH_THRESHOLD = 20; // Use batch processing for > 20 images
+
     try {
       // Update status to processing
       await snapshot.ref.update({
         status: "processing",
+        progress: {
+          stage: "initializing",
+          completed: 0,
+          total: imageCount,
+          message: `Preparing to process ${imageCount} images...`,
+        },
       });
 
       logger.info("Generating report with vision analysis", {
@@ -278,7 +539,8 @@ export const generateReport = onDocumentCreated(
         promptLength: prompt.length,
         reportStyle: reportStyle || "professional",
         reportDepth: reportDepth || "standard",
-        imageCount: imageData.length,
+        imageCount: imageCount,
+        batchMode: imageCount > BATCH_THRESHOLD,
       });
 
       // Initialize OpenAI
@@ -286,101 +548,316 @@ export const generateReport = onDocumentCreated(
         apiKey: openaiApiKey.value(),
       });
 
-      // Download images and convert to base64
       const bucket = admin.storage().bucket();
-      const imageContents: Array<{type: "image_url"; image_url: {url: string}}> = [];
 
-      for (const img of imageData) {
-        try {
-          // Extract storage path from URL
-          const fileName = img.imageUrl.split("/").pop()?.split("?")[0];
-          const decodedFileName = decodeURIComponent(fileName || "");
-          const storagePath = decodedFileName.replace(`${bucket.name}/`, "");
+      // Decision: Batch processing or single request?
+      if (imageCount > BATCH_THRESHOLD) {
+        // PARALLEL BATCH PROCESSING for large datasets
+        logger.info(`Using parallel batch processing for ${imageCount} images`);
 
-          // Download image
-          const file = bucket.file(storagePath);
-          const [fileBuffer] = await file.download();
-          const base64Image = fileBuffer.toString("base64");
+        // Dynamic batch sizing based on total images
+        let imagesPerBatch = 5;
+        if (imageCount > 200) {
+          imagesPerBatch = 5; // 500 images = 100 batches
+        } else if (imageCount > 100) {
+          imagesPerBatch = 10; // 200 images = 20 batches
+        } else if (imageCount > 50) {
+          imagesPerBatch = 10; // 100 images = 10 batches
+        }
 
-          // Determine MIME type
-          let mimeType = "image/jpeg";
-          if (img.fileName.toLowerCase().endsWith(".png")) {
-            mimeType = "image/png";
-          } else if (img.fileName.toLowerCase().endsWith(".webp")) {
-            mimeType = "image/webp";
-          }
+        const batches: Array<typeof imageData> = [];
+        for (let i = 0; i < imageCount; i += imagesPerBatch) {
+          const batchData = imageData.slice(i, i + imagesPerBatch).map((img, idx) => ({
+            ...img,
+            index: i + idx, // Preserve sequence order
+          }));
+          batches.push(batchData);
+        }
 
-          imageContents.push({
-            type: "image_url",
-            image_url: {
-              url: `data:${mimeType};base64,${base64Image}`,
+        logger.info(`Created ${batches.length} batches of ~${imagesPerBatch} images each`);
+
+        await snapshot.ref.update({
+          progress: {
+            imagesProcessed: 0,
+            totalImages: imageCount,
+            message: `Starting to process ${imageCount} images...`,
+          },
+        });
+
+        // Process batches in parallel - MAXIMUM SPEED
+        const CONCURRENT_BATCHES = 30; // Process 30 batches at a time for speed
+        const batchResults: Array<{batchIndex: number; report: string; success: boolean; error?: string}> = [];
+
+        for (let i = 0; i < batches.length; i += CONCURRENT_BATCHES) {
+          const batchGroup = batches.slice(i, i + CONCURRENT_BATCHES);
+
+          logger.info(`Processing batch group ${Math.floor(i / CONCURRENT_BATCHES) + 1} of ${Math.ceil(batches.length / CONCURRENT_BATCHES)}`);
+
+          // Process batches in parallel
+          const promises = batchGroup.map((batch, idx) =>
+            processBatch(
+              batch,
+              i + idx,
+              prompt,
+              reportStyle || "professional",
+              reportDepth || "standard",
+              openai,
+              bucket
+            )
+          );
+
+          const results = await Promise.all(promises);
+          batchResults.push(...results);
+
+          // Calculate images processed from successful batches
+          const imagesProcessed = batchResults.filter(r => r.success).reduce((sum, r) => {
+            const batch = batches[r.batchIndex];
+            return sum + batch.length;
+          }, 0);
+
+          // Update progress with images processed
+          await snapshot.ref.update({
+            progress: {
+              imagesProcessed,
+              totalImages: imageCount,
+              message: `Processing ${imagesProcessed} out of ${imageCount} images...`,
             },
           });
-        } catch (error) {
-          logger.error(`Failed to download image ${img.fileName}:`, error);
+
+          // No delays - maximum speed!
         }
+
+        // Check for failures
+        const failedBatches = batchResults.filter((r) => !r.success);
+        if (failedBatches.length > 0) {
+          logger.warn(`${failedBatches.length} batches failed, attempting retry...`);
+
+          const successfulImages = batchResults.filter(r => r.success).reduce((sum, r) => {
+            const batch = batches[r.batchIndex];
+            return sum + batch.length;
+          }, 0);
+
+          await snapshot.ref.update({
+            progress: {
+              imagesProcessed: successfulImages,
+              totalImages: imageCount,
+              message: `Retrying some images... (${successfulImages} processed so far)`,
+            },
+          });
+
+          // Retry failed batches with smaller size
+          for (const failed of failedBatches) {
+            const originalBatch = batches[failed.batchIndex];
+            // Split into smaller batches (2 images each)
+            const smallBatches: Array<typeof originalBatch> = [];
+            for (let j = 0; j < originalBatch.length; j += 2) {
+              smallBatches.push(originalBatch.slice(j, j + 2));
+            }
+
+            logger.info(`Retrying batch ${failed.batchIndex + 1} with ${smallBatches.length} smaller batches`);
+
+            for (let k = 0; k < smallBatches.length; k++) {
+              const retryResult = await processBatch(
+                smallBatches[k],
+                failed.batchIndex,
+                prompt,
+                reportStyle || "professional",
+                reportDepth || "standard",
+                openai,
+                bucket
+              );
+
+              if (retryResult.success) {
+                // Update the failed result with success
+                failed.success = true;
+                failed.report += retryResult.report + "\n\n";
+              }
+
+              await sleep(1000); // Rate limiting
+            }
+          }
+        }
+
+        // Aggregate results in order
+        await snapshot.ref.update({
+          progress: {
+            imagesProcessed: imageCount,
+            totalImages: imageCount,
+            message: "Finalizing your report...",
+          },
+        });
+
+        batchResults.sort((a, b) => a.batchIndex - b.batchIndex);
+        const successfulResults = batchResults.filter((r) => r.success);
+
+        // Combine mini-reports into final report
+        const rawReport = `# Museum Collection Analysis\n\n**Total Exhibits Analyzed:** ${imageCount}\n**Processing Method:** Parallel Batch Processing\n**Batches Processed:** ${batches.length}\n**Report Style:** ${reportStyle || "Professional"}\n**Depth:** ${reportDepth || "Standard"}\n\n---\n\n${successfulResults.map((r) => r.report).join("\n\n---\n\n")}`;
+
+        // Normalize formatting to ensure consistency across all batches
+        const finalReport = normalizeReportFormatting(rawReport);
+
+        logger.info("Batch processing completed", {
+          totalBatches: batches.length,
+          successfulBatches: successfulResults.length,
+          failedBatches: failedBatches.length,
+          reportLength: finalReport.length,
+        });
+
+        // Save report (to Storage if large, Firestore if small)
+        const savedReport = await saveReport(finalReport, reportId, bucket);
+
+        // Update Firestore with final report
+        await snapshot.ref.update({
+          ...savedReport,
+          status: "completed",
+          completedAt: admin.firestore.FieldValue.serverTimestamp(),
+          batchMetrics: {
+            totalBatches: batches.length,
+            successfulBatches: successfulResults.length,
+            failedBatches: failedBatches.length,
+            imagesPerBatch: imagesPerBatch,
+          },
+          error: admin.firestore.FieldValue.delete(),
+          progress: admin.firestore.FieldValue.delete(),
+        });
+
+        logger.info(`Successfully generated batched report ${reportId}`);
+      } else {
+        // SINGLE REQUEST for small datasets (< 20 images)
+        logger.info(`Using single request for ${imageCount} images`);
+
+        await snapshot.ref.update({
+          progress: {
+            imagesProcessed: 0,
+            totalImages: imageCount,
+            message: `Processing ${imageCount} images...`,
+          },
+        });
+
+        const imageContents: Array<{type: "image_url"; image_url: {url: string}}> = [];
+
+        for (const img of imageData) {
+          try {
+            // Extract storage path from URL
+            const fileName = img.imageUrl.split("/").pop()?.split("?")[0];
+            const decodedFileName = decodeURIComponent(fileName || "");
+            const storagePath = decodedFileName.replace(`${bucket.name}/`, "");
+
+            // Download image
+            const file = bucket.file(storagePath);
+            const [fileBuffer] = await file.download();
+            const base64Image = fileBuffer.toString("base64");
+
+            // Determine MIME type
+            let mimeType = "image/jpeg";
+            if (img.fileName.toLowerCase().endsWith(".png")) {
+              mimeType = "image/png";
+            } else if (img.fileName.toLowerCase().endsWith(".webp")) {
+              mimeType = "image/webp";
+            }
+
+            imageContents.push({
+              type: "image_url",
+              image_url: {
+                url: `data:${mimeType};base64,${base64Image}`,
+              },
+            });
+          } catch (error) {
+            logger.error(`Failed to download image ${img.fileName}:`, error);
+          }
+        }
+
+        // System prompt with STRICT template (same as batch processing)
+        const depthGuidance = {
+          brief: "Be concise and focus on key findings.",
+          standard: "Provide balanced analysis with important details.",
+          comprehensive: "Be thorough and detailed in your analysis.",
+        };
+
+        const systemPrompt = `You are analyzing museum exhibits. For EACH exhibit, you MUST follow this EXACT format with EACH item on a NEW LINE:
+
+---
+
+**EXHIBIT [NUMBER]**
+
+**Title:** [Object name/title]
+
+**Historical Significance**
+
+**Date:** [Time period or date]
+**Significance:** [Why is it important?]
+
+**Physical Condition**
+
+**Materials:** [What is it made of?]
+**Condition:** [Current state - wear, damage, fading, etc.]
+
+**Preservation**
+
+**Recommendations:** [How to preserve and store it]
+
+---
+
+CRITICAL RULES:
+- "EXHIBIT [NUMBER]" must be ALL CAPS and **bold**
+- "Title:" appears BEFORE Historical Significance section
+- Use **bold** for ALL headers and sub-headers
+- Each sub-heading MUST be on its OWN line
+- NO numbering (1., 2., 3.) before section headings
+- ${depthGuidance[reportDepth as keyof typeof depthGuidance] || depthGuidance.standard}
+- Maintain exact sequence order`;
+
+        // Build message content with images and text
+        const userContent: Array<
+          {type: "image_url"; image_url: {url: string}} |
+          {type: "text"; text: string}
+        > = [
+          ...imageContents,
+          {
+            type: "text",
+            text: `${prompt}\n\nYou are viewing PHOTOGRAPHS of physical museum exhibits. Analyze the ACTUAL objects you see in these images.\n\nFor each exhibit, assess:\n1. **Historical Significance** - What is it? When is it from? Why is it important?\n2. **Physical Condition** - What materials do you see? What is the condition? Any damage, fading, wear?\n3. **Preservation Recommendations** - Based on what you observe, what conservation is needed?\n\nThe text has already been extracted from these images:\n\n${combinedTexts}\n\nUse this text along with your VISUAL analysis of the images to generate a comprehensive museum report in markdown format.`,
+          },
+        ];
+
+        // Call GPT-4o Vision to generate comprehensive report
+        const response = await openai.chat.completions.create({
+          model: "gpt-4o",
+          messages: [
+            {
+              role: "system",
+              content: systemPrompt,
+            },
+            {
+              role: "user",
+              content: userContent,
+            },
+          ],
+          max_tokens: 16000, // High limit - let depth guide the length
+          temperature: 0.7,
+        });
+
+        const rawReport = response.choices[0]?.message?.content || "Failed to generate report";
+
+        // Normalize formatting to ensure consistency
+        const report = normalizeReportFormatting(rawReport);
+
+        logger.info("Report generated successfully", {
+          reportLength: report.length,
+        });
+
+        // Save report (to Storage if large, Firestore if small)
+        const savedReport = await saveReport(report, reportId, bucket);
+
+        // Update Firestore with generated report
+        await snapshot.ref.update({
+          ...savedReport,
+          status: "completed",
+          completedAt: admin.firestore.FieldValue.serverTimestamp(),
+          error: admin.firestore.FieldValue.delete(),
+        });
+
+        logger.info(`Successfully generated report ${reportId}`);
       }
-
-      // Adjust system prompt based on report style and depth
-      const depthGuidance = {
-        brief: "Provide a concise, high-level overview focusing on the most important findings. Be direct and summarize key points without excessive detail.",
-        standard: "Provide a balanced analysis with important details and observations. Cover all key aspects thoroughly but remain focused.",
-        comprehensive: "Provide an extensive, in-depth analysis with detailed documentation. Include thorough observations, context, specific measurements when visible, detailed condition assessments, and comprehensive preservation strategies. Be exhaustive in your analysis.",
-      };
-
-      const stylePrompts = {
-        casual: `You are a friendly museum guide analyzing PHYSICAL museum exhibits from photographs. You can SEE the actual artifacts, objects, and displays. Write in a conversational tone. Analyze what you SEE in the images: materials, condition, wear, damage, colors, etc. ${depthGuidance[reportDepth as keyof typeof depthGuidance] || depthGuidance.standard} Use markdown formatting for clear structure: ## for main sections, ### for subsections, **bold** for emphasis, and proper line breaks.`,
-        professional: `You are a professional museum curator analyzing PHYSICAL museum exhibits from photographs. You can SEE the actual artifacts. Use your visual analysis to assess: Historical Significance, Physical Condition (materials, wear, deterioration), and Preservation Recommendations. Be specific about what you observe visually. ${depthGuidance[reportDepth as keyof typeof depthGuidance] || depthGuidance.standard} Use markdown formatting for clear structure: ## for main sections, ### for subsections, **bold** for emphasis, and proper line breaks.`,
-        academic: `You are a scholarly museum researcher analyzing PHYSICAL museum exhibits from photographs. You can SEE the actual objects. Provide formal analysis of: materials, manufacturing techniques, condition assessment, deterioration patterns, and conservation requirements based on visual evidence. ${depthGuidance[reportDepth as keyof typeof depthGuidance] || depthGuidance.standard} Use markdown formatting for clear structure: ## for main sections, ### for subsections, **bold** for emphasis, and proper line breaks.`,
-      };
-
-      const systemPrompt = stylePrompts[reportStyle as keyof typeof stylePrompts] ||
-        stylePrompts.professional;
-
-      // Build message content with images and text
-      const userContent: Array<
-        {type: "image_url"; image_url: {url: string}} |
-        {type: "text"; text: string}
-      > = [
-        ...imageContents,
-        {
-          type: "text",
-          text: `${prompt}\n\nYou are viewing PHOTOGRAPHS of physical museum exhibits. Analyze the ACTUAL objects you see in these images.\n\nFor each exhibit, assess:\n1. **Historical Significance** - What is it? When is it from? Why is it important?\n2. **Physical Condition** - What materials do you see? What is the condition? Any damage, fading, wear?\n3. **Preservation Recommendations** - Based on what you observe, what conservation is needed?\n\nThe text has already been extracted from these images:\n\n${combinedTexts}\n\nUse this text along with your VISUAL analysis of the images to generate a comprehensive museum report in markdown format.`,
-        },
-      ];
-
-      // Call GPT-4o Vision to generate comprehensive report
-      const response = await openai.chat.completions.create({
-        model: "gpt-4o",
-        messages: [
-          {
-            role: "system",
-            content: systemPrompt,
-          },
-          {
-            role: "user",
-            content: userContent,
-          },
-        ],
-        max_tokens: 16000, // High limit - let depth guide the length
-        temperature: 0.7,
-      });
-
-      const report = response.choices[0]?.message?.content || "Failed to generate report";
-
-      logger.info("Report generated successfully", {
-        reportLength: report.length,
-      });
-
-      // Update Firestore with generated report
-      await snapshot.ref.update({
-        report: report,
-        status: "completed",
-        completedAt: admin.firestore.FieldValue.serverTimestamp(),
-        error: admin.firestore.FieldValue.delete(),
-      });
-
-      logger.info(`Successfully generated report ${reportId}`);
     } catch (error: unknown) {
       const err = error as Error;
       logger.error(`Error generating report ${reportId}:`, err);

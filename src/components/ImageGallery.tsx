@@ -35,10 +35,33 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
   const [generating, setGenerating] = useState(false);
   const [generatedReport, setGeneratedReport] = useState<string>('');
   const [currentReportId, setCurrentReportId] = useState<string | null>(null);
+  const [reportProgress, setReportProgress] = useState<{imagesProcessed: number; totalImages: number; message: string} | null>(null);
   const [showReportModal, setShowReportModal] = useState(false);
   const [reportDepth, setReportDepth] = useState<'brief' | 'standard' | 'comprehensive'>('standard');
   const [reportStyle, setReportStyle] = useState<'casual' | 'professional' | 'academic'>('professional');
   const { currentUser } = useAuth();
+
+  // Helper function: Clean report formatting for consistent display
+  const cleanReportFormatting = (reportText: string): string => {
+    return reportText
+      // Standardize "Exhibit #X" to "EXHIBIT X" (all caps, remove #, make bold)
+      .replace(/\*{0,2}Exhibit\s*#?\s*(\d+)\*{0,2}/gi, '**EXHIBIT $1**')
+      // Split sub-headers that are on the same line (e.g., "Date: text Significance: text")
+      .replace(/\*{0,2}(Date|Significance|Materials|Condition|Recommendations):\*{0,2}\s*([^\n]+?)\s+\*{0,2}(Title|Date|Significance|Materials|Condition|Recommendations):/gi, 
+               '**$1:** $2\n\n**$3:')
+      // Make section headers BOLD
+      .replace(/^(Historical Significance|Physical Condition|Preservation)$/gmi, '**$1**')
+      // Remove numbered list prefixes from section headings (1., 2., 3., etc.)
+      .replace(/^\s*\d+\.\s+(Historical Significance:?|Physical Condition:?|Preservation:?)/gmi, '**$1**')
+      // Remove bullet point prefixes from section headings (•, -, *, etc.)
+      .replace(/^\s*[•\-*]\s+(Historical Significance:?|Physical Condition:?|Preservation:?)/gmi, '**$1**')
+      // Remove colons after section headers
+      .replace(/^(Historical Significance|Physical Condition|Preservation):\s*/gmi, '**$1**\n\n')
+      // Make sub-headers BOLD and add line breaks (Title:, Date:, etc.)
+      .replace(/(Title:|Date:|Significance:|Materials:|Condition:|Recommendations:)/g, '\n**$1**')
+      // Clean up multiple newlines
+      .replace(/\n{3,}/g, '\n\n');
+  };
 
   useEffect(() => {
     if (!currentUser) return;
@@ -71,18 +94,25 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
 
     const reportDocRef = doc(db, 'reports', currentReportId);
     
-    const unsubscribe = onSnapshot(reportDocRef, (snapshot) => {
+    const unsubscribe = onSnapshot(reportDocRef, async (snapshot) => {
       const data = snapshot.data();
       
       if (!data) return;
 
+      // Update progress if available
+      if (data.progress) {
+        setReportProgress(data.progress);
+      }
+
       if (data.status === 'completed') {
-        setGeneratedReport(data.report);
+        await loadReport(data);
         setGenerating(false);
+        setReportProgress(null); // Clear progress
         alert('Report generated successfully!');
         setCurrentReportId(null); // Stop listening
       } else if (data.status === 'failed') {
         setGenerating(false);
+        setReportProgress(null); // Clear progress
         alert('Failed to generate report: ' + (data.error || 'Unknown error'));
         setCurrentReportId(null); // Stop listening
       }
@@ -97,6 +127,24 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
   }, [currentReportId]);
 
   // Load most recent completed report on mount
+  // Helper function to load report (from Storage URL or directly from Firestore)
+  const loadReport = async (reportData: any) => {
+    if (reportData.reportUrl) {
+      // Large report stored in Storage
+      try {
+        const response = await fetch(reportData.reportUrl);
+        const reportText = await response.text();
+        setGeneratedReport(reportText);
+      } catch (error) {
+        console.error('Error fetching report from Storage:', error);
+        alert('Failed to load report from storage');
+      }
+    } else if (reportData.report) {
+      // Small report stored directly in Firestore
+      setGeneratedReport(reportData.report);
+    }
+  };
+
   useEffect(() => {
     if (!currentUser) return;
 
@@ -107,15 +155,13 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
       orderBy('createdAt', 'desc')
     );
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
+    const unsubscribe = onSnapshot(q, async (snapshot) => {
       if (!snapshot.empty) {
         const mostRecentReport = snapshot.docs[0].data();
-        if (mostRecentReport.report) {
-          setGeneratedReport(mostRecentReport.report);
-          // Restore selected images from the report
-          if (mostRecentReport.imageIds && Array.isArray(mostRecentReport.imageIds)) {
-            setSelectedImageIds(new Set(mostRecentReport.imageIds));
-          }
+        await loadReport(mostRecentReport);
+        // Restore selected images from the report
+        if (mostRecentReport.imageIds && Array.isArray(mostRecentReport.imageIds)) {
+          setSelectedImageIds(new Set(mostRecentReport.imageIds));
         }
       }
     });
@@ -136,28 +182,19 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
     setShowReportModal(false); // Close modal
     setGenerating(true);
     setGeneratedReport(''); // Clear previous report
+    setReportProgress(null); // Clear previous progress
     
     try {
-      // Get all selected images with their extracted text and URLs
+      // Get all selected images
       const selectedImages = images.filter(img => selectedImageIds.has(img.id));
-      const combinedTexts = selectedImages.map(img => 
-        `--- ${img.fileName} ---\n${img.extractedText}\n`
-      ).join('\n');
-      
-      // Prepare image data for Vision analysis
-      const imageData = selectedImages.map(img => ({
-        fileName: img.fileName,
-        imageUrl: img.imageUrl,
-        extractedText: img.extractedText
-      }));
       
       // Create a report document in Firestore - this triggers the Cloud Function
+      // Only pass imageIds - the Cloud Function will fetch full data from Firestore
       const reportRef = await addDoc(collection(db, 'reports'), {
         userId: currentUser.uid,
-        combinedTexts,
-        imageData, // Pass images for Vision analysis
         prompt: reportPrompt,
         imageIds: Array.from(selectedImageIds),
+        imageCount: selectedImages.length,
         reportDepth,
         reportStyle,
         status: 'pending',
@@ -313,7 +350,29 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
                 fontWeight: 600
               }}
             >
-              {generating ? '🔄 Generating Report...' : '📄 Configure Report'}
+              {generating ? (
+                reportProgress ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px', width: '100%' }}>
+                    <div style={{ fontSize: '14px' }}>
+                      Processing {reportProgress.imagesProcessed} out of {reportProgress.totalImages} images
+                    </div>
+                    <div style={{ 
+                      width: '100%', 
+                      height: '6px', 
+                      background: '#e5e7eb', 
+                      borderRadius: '3px', 
+                      overflow: 'hidden' 
+                    }}>
+                      <div style={{ 
+                        height: '100%', 
+                        background: '#3b82f6', 
+                        width: `${Math.round((reportProgress.imagesProcessed / reportProgress.totalImages) * 100)}%`,
+                        transition: 'width 0.3s ease'
+                      }}></div>
+                    </div>
+                  </div>
+                ) : '🔄 Starting...'
+              ) : '📄 Configure Report'}
             </button>
             <span style={{ color: '#6b7280', fontSize: '14px' }}>
               {selectedImageIds.size} image{selectedImageIds.size > 1 ? 's' : ''} selected
@@ -352,8 +411,11 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
                   onClick={async () => {
                     const { marked } = await import('marked');
                     
+                    // Clean formatting before converting to HTML
+                    const cleanedReport = cleanReportFormatting(generatedReport);
+                    
                     // Convert markdown to HTML
-                    const htmlContent = await marked(generatedReport);
+                    const htmlContent = await marked(cleanedReport);
                     
                     // Create a complete HTML document with same styling as display
                     const styledHTML = `
@@ -499,12 +561,12 @@ ${htmlContent}
                   h4: ({node, ...props}) => <h4 style={{ fontSize: '18px', fontWeight: '600', marginTop: '14px', marginBottom: '8px', color: '#6b7280' }} {...props} />,
                   p: ({node, ...props}) => <p style={{ marginTop: '12px', marginBottom: '12px', color: '#374151' }} {...props} />,
                   ul: ({node, ...props}) => <ul style={{ marginLeft: '24px', marginTop: '8px', marginBottom: '8px', listStyleType: 'disc' }} {...props} />,
-                  ol: ({node, ...props}) => <ol style={{ marginLeft: '24px', marginTop: '8px', marginBottom: '8px' }} {...props} />,
-                  li: ({node, ...props}) => <li style={{ marginTop: '6px', marginBottom: '6px', paddingLeft: '8px' }} {...props} />,
+                  ol: ({node, ...props}) => <ol style={{ marginLeft: '0', marginTop: '8px', marginBottom: '8px', listStyleType: 'none' }} {...props} />,
+                  li: ({node, ...props}) => <li style={{ marginTop: '6px', marginBottom: '6px', paddingLeft: '0', listStyleType: 'none' }} {...props} />,
                   strong: ({node, ...props}) => <strong style={{ fontWeight: '700', color: '#1f2937' }} {...props} />,
                 }}
               >
-                {generatedReport}
+                {cleanReportFormatting(generatedReport)}
               </ReactMarkdown>
             </div>
           </div>
