@@ -136,8 +136,15 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
     });
     
     // Make sub-headers BOLD and add line breaks (dynamic)
+    // First, remove any existing bold markers around sub-headings, then add them consistently
     allHeadings.forEach(heading => {
       const escapedName = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      // Remove existing bold markers (if any) from sub-headings
+      cleaned = cleaned.replace(
+        new RegExp(`\\*{0,2}(${escapedName}:)\\*{0,2}`, 'g'),
+        '$1'
+      );
+      // Now add bold markers consistently
       cleaned = cleaned.replace(
         new RegExp(`(${escapedName}:)`, 'g'),
         '\n**$1**'
