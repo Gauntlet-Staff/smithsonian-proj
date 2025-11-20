@@ -30,7 +30,7 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
   const [selectedImage, setSelectedImage] = useState<ImageDocument | null>(null);
   const [selectedImageIds, setSelectedImageIds] = useState<Set<string>>(new Set());
   const [reportPrompt, setReportPrompt] = useState<string>(
-    'Analyze these museum exhibits and create a comprehensive report highlighting historical significance, physical condition, and recommendations for preservation.'
+    'For each exhibit, analyze:\n\nHistorical Significance - What is it? When is it from? Why is it important?\n\nPhysical Condition - What materials? Current condition? Any damage, wear, fading?\n\nPreservation - What conservation is needed? How should it be stored?'
   );
   const [generating, setGenerating] = useState(false);
   const [generatedReport, setGeneratedReport] = useState<string>('');

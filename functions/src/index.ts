@@ -355,38 +355,46 @@ async function processBatch(
       comprehensive: "Be thorough and detailed in your analysis.",
     };
 
-    const systemPrompt = `You are analyzing museum exhibits. For EACH exhibit, you MUST follow this EXACT format with EACH item on a NEW LINE:
+    const systemPrompt = `You are analyzing museum exhibits. Follow the user's custom instructions for WHAT to analyze, but maintain consistent formatting.
 
+FORMATTING STRUCTURE (use this as your template):
+---
+**EXHIBIT [NUMBER]** (all caps, bold)
+
+**Title:** [object name]
+
+**[Section Name]**
+
+**Sub-heading:** [content]
+**Sub-heading:** [content]
+
+**[Section Name]**
+
+**Sub-heading:** [content]
+**Sub-heading:** [content]
 ---
 
-**EXHIBIT [NUMBER]**
-
-**Title:** [Object name/title]
+EXAMPLE FORMAT for sections (you can adapt sections based on user's instructions):
 
 **Historical Significance**
-
-**Date:** [Time period or date]
-**Significance:** [Why is it important?]
+**Date:** ...
+**Significance:** ...
 
 **Physical Condition**
-
-**Materials:** [What is it made of?]
-**Condition:** [Current state - wear, damage, fading, etc.]
+**Materials:** ...
+**Condition:** ...
 
 **Preservation**
-
-**Recommendations:** [How to preserve and store it]
-
----
+**Recommendations:** ...
 
 CRITICAL RULES:
-- "EXHIBIT [NUMBER]" must be ALL CAPS and **bold**
-- "Title:" appears BEFORE Historical Significance section
-- Use **bold** for ALL headers and sub-headers
-- Each sub-heading MUST be on its OWN line
-- NO numbering (1., 2., 3.) before section headings
+- **EXHIBIT [NUMBER]** must be ALL CAPS and bold
+- Use **bold** for ALL section headers and sub-headers
+- Each sub-heading on its OWN line
+- NO numbering (1., 2., 3.) before headings
 - ${depthGuidance[reportDepth as keyof typeof depthGuidance] || depthGuidance.standard}
-- Maintain exact sequence order`;
+
+Now follow the user's specific analysis instructions below.`;
 
     // Build message content
     const userContent: Array<
@@ -396,7 +404,7 @@ CRITICAL RULES:
       ...imageContents,
       {
         type: "text",
-        text: `${prompt}\n\nAnalyze these ${batch.length} physical museum exhibits in ORDER.\n\nExtracted text:\n${batchTexts.join("\n\n")}\n\nGenerate a report for exhibits ${batch[0].index + 1} to ${batch[batch.length - 1].index + 1}.`,
+        text: `USER'S ANALYSIS INSTRUCTIONS:\n${prompt}\n\nAnalyze these ${batch.length} physical museum exhibits in ORDER based on the instructions above.\n\nExtracted text from images:\n${batchTexts.join("\n\n")}\n\nGenerate report for exhibits ${batch[0].index + 1} to ${batch[batch.length - 1].index + 1}.`,
       },
     ];
 
@@ -774,38 +782,46 @@ export const generateReport = onDocumentCreated(
           comprehensive: "Be thorough and detailed in your analysis.",
         };
 
-        const systemPrompt = `You are analyzing museum exhibits. For EACH exhibit, you MUST follow this EXACT format with EACH item on a NEW LINE:
+        const systemPrompt = `You are analyzing museum exhibits. Follow the user's custom instructions for WHAT to analyze, but maintain consistent formatting.
 
+FORMATTING STRUCTURE (use this as your template):
+---
+**EXHIBIT [NUMBER]** (all caps, bold)
+
+**Title:** [object name]
+
+**[Section Name]**
+
+**Sub-heading:** [content]
+**Sub-heading:** [content]
+
+**[Section Name]**
+
+**Sub-heading:** [content]
+**Sub-heading:** [content]
 ---
 
-**EXHIBIT [NUMBER]**
-
-**Title:** [Object name/title]
-
+EXAMPLE FORMAT (you can adapt sections based on user's instructions):
 **Historical Significance**
-
-**Date:** [Time period or date]
-**Significance:** [Why is it important?]
+**Title:** ...
+**Date:** ...
+**Significance:** ...
 
 **Physical Condition**
-
-**Materials:** [What is it made of?]
-**Condition:** [Current state - wear, damage, fading, etc.]
+**Materials:** ...
+**Condition:** ...
 
 **Preservation**
-
-**Recommendations:** [How to preserve and store it]
-
----
+**Recommendations:** ...
 
 CRITICAL RULES:
-- "EXHIBIT [NUMBER]" must be ALL CAPS and **bold**
-- "Title:" appears BEFORE Historical Significance section
-- Use **bold** for ALL headers and sub-headers
-- Each sub-heading MUST be on its OWN line
-- NO numbering (1., 2., 3.) before section headings
+- **EXHIBIT [NUMBER]** must be ALL CAPS and bold
+- Use **bold** for ALL section headers and sub-headers
+- Each sub-heading on its OWN line
+- NO numbering (1., 2., 3.) before headings
 - ${depthGuidance[reportDepth as keyof typeof depthGuidance] || depthGuidance.standard}
-- Maintain exact sequence order`;
+
+Now follow the user's specific analysis instructions below.`;
 
         // Build message content with images and text
         const userContent: Array<
@@ -815,7 +831,7 @@ CRITICAL RULES:
           ...imageContents,
           {
             type: "text",
-            text: `${prompt}\n\nYou are viewing PHOTOGRAPHS of physical museum exhibits. Analyze the ACTUAL objects you see in these images.\n\nFor each exhibit, assess:\n1. **Historical Significance** - What is it? When is it from? Why is it important?\n2. **Physical Condition** - What materials do you see? What is the condition? Any damage, fading, wear?\n3. **Preservation Recommendations** - Based on what you observe, what conservation is needed?\n\nThe text has already been extracted from these images:\n\n${combinedTexts}\n\nUse this text along with your VISUAL analysis of the images to generate a comprehensive museum report in markdown format.`,
+            text: `USER'S ANALYSIS INSTRUCTIONS:\n${prompt}\n\nYou are viewing PHOTOGRAPHS of physical museum exhibits. Analyze the ACTUAL objects you see in these images based on the instructions above.\n\nExtracted text from images:\n\n${combinedTexts}\n\nUse this text along with your VISUAL analysis to generate your report in markdown format.`,
           },
         ];
 
