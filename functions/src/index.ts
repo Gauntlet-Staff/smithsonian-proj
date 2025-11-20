@@ -18,6 +18,18 @@ import OpenAI from "openai";
 // Define the secret
 const openaiApiKey = defineSecret("OPENAI_API_KEY");
 
+// Template Interfaces
+interface TemplateSection {
+  name: string;
+  type: 'single' | 'section'; // 'single' = field, 'section' = section with sub-headings
+  subHeadings: string[];
+}
+
+interface ReportTemplate {
+  templateName: string;
+  sections: TemplateSection[];
+}
+
 // Initialize Firebase Admin
 admin.initializeApp();
 
@@ -229,22 +241,88 @@ export const retryTextExtraction = onCall(
 // Helper function: Sleep/delay
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Helper function: Normalize report formatting
-function normalizeReportFormatting(report: string): string {
-  return report
-    // Standardize "Exhibit #X" to "**EXHIBIT X**" (all caps, remove #, add bold)
-    .replace(/\*{0,2}Exhibit\s*#?\s*(\d+)\*{0,2}/gi, "**EXHIBIT $1**")
-    // Split sub-headers that are on the same line (e.g., "Date: text Significance: text")
-    .replace(/\*{0,2}(Date|Significance|Materials|Condition|Recommendations):\*{0,2}\s*([^\n]+?)\s+\*{0,2}(Title|Date|Significance|Materials|Condition|Recommendations):/gi,
-      "**$1:** $2\n\n**$3:")
-    // Remove numbered list prefixes from section headers (1., 2., 3., etc.) - with or without colon
-    .replace(/^\s*\d+\.\s+(Historical Significance:?|Physical Condition:?|Preservation:?)/gmi, "$1")
-    // Remove bullet point prefixes from section headers (•, -, *, etc.) - with or without colon
-    .replace(/^\s*[•\-*]\s+(Historical Significance:?|Physical Condition:?|Preservation:?)/gmi, "$1")
-    // Ensure consistent format: no colons after section headers
-    .replace(/^(Historical Significance|Physical Condition|Preservation):\s*/gmi, "$1\n\n")
-    // Also catch colons in the middle of lines
-    .replace(/(Historical Significance|Physical Condition|Preservation):\s*/gi, "$1\n\n");
+// Helper function: Build template structure for GPT prompt
+function buildTemplateStructure(template: ReportTemplate): string {
+  return template.sections.map(section => {
+    if (section.type === 'single') {
+      // Single line field like "Title:"
+      return `**${section.name}:** [content]`;
+    } else {
+      // Section with sub-headings
+      const subHeadings = section.subHeadings
+        .map(sh => `**${sh}:** [content]`)
+        .join('\n');
+      return `**${section.name}**\n\n${subHeadings}`;
+    }
+  }).join('\n\n');
+}
+
+// Helper function: Normalize report formatting (template-aware)
+function normalizeReportFormatting(report: string, template: ReportTemplate): string {
+  let normalized = report;
+  
+  // Standardize "Exhibit #X" to "**EXHIBIT X**" (all caps, remove #, add bold)
+  normalized = normalized.replace(/\*{0,2}Exhibit\s*#?\s*(\d+)\*{0,2}/gi, "**EXHIBIT $1**");
+  
+  // Extract all section names and sub-heading names from template
+  const sectionNames = template.sections
+    .filter(s => s.type === 'section')
+    .map(s => s.name);
+  
+  const subHeadingNames = template.sections
+    .flatMap(s => s.subHeadings);
+  
+  // Add single-type section names (like "Title") to sub-headings
+  const singleFieldNames = template.sections
+    .filter(s => s.type === 'single')
+    .map(s => s.name);
+  
+  const allSubHeadings = [...subHeadingNames, ...singleFieldNames];
+  
+  // Split sub-headers that are on the same line (dynamic based on template)
+  if (allSubHeadings.length > 0) {
+    const escapedSubHeadings = allSubHeadings.map(sh => sh.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    const subHeadingPattern = escapedSubHeadings.join('|');
+    normalized = normalized.replace(
+      new RegExp(`\\*{0,2}(${subHeadingPattern}):\\*{0,2}\\s*([^\\n]+?)\\s+\\*{0,2}(${subHeadingPattern}):`, 'gi'),
+      '**$1:** $2\n\n**$3:'
+    );
+  }
+  
+  // Remove numbered list prefixes from section headers (dynamic)
+  sectionNames.forEach(sectionName => {
+    const escapedName = sectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    normalized = normalized.replace(
+      new RegExp(`^\\s*\\d+\\.\\s+(${escapedName}):?`, 'gmi'),
+      '$1'
+    );
+  });
+  
+  // Remove bullet point prefixes from section headers (dynamic)
+  sectionNames.forEach(sectionName => {
+    const escapedName = sectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    normalized = normalized.replace(
+      new RegExp(`^\\s*[•\\-*]\\s+(${escapedName}):?`, 'gmi'),
+      '$1'
+    );
+  });
+  
+  // Remove colons after section headers and ensure bold (dynamic)
+  sectionNames.forEach(sectionName => {
+    const escapedName = sectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // At start of line
+    normalized = normalized.replace(
+      new RegExp(`^(${escapedName}):\\s*`, 'gmi'),
+      '$1\n\n'
+    );
+    // In middle of line
+    normalized = normalized.replace(
+      new RegExp(`(${escapedName}):\\s*`, 'gi'),
+      '$1\n\n'
+    );
+  });
+  
+  return normalized;
 }
 
 // Helper function: Save report (to Storage if large, Firestore if small)
@@ -301,6 +379,7 @@ async function processBatch(
   prompt: string,
   reportStyle: string,
   reportDepth: string,
+  template: ReportTemplate,
   openai: OpenAI,
   bucket: any
 ): Promise<{batchIndex: number; report: string; success: boolean; error?: string}> {
@@ -348,7 +427,7 @@ async function processBatch(
       }
     }
 
-    // System prompt for batch processing with STRICT template
+    // System prompt for batch processing with DYNAMIC template
     const depthGuidance = {
       brief: "Be concise and focus on key findings.",
       standard: "Provide balanced analysis with important details.",
@@ -361,48 +440,31 @@ async function processBatch(
       academic: "Use formal, scholarly language. Include technical terminology and detailed analysis.",
     };
 
-    const systemPrompt = `You are analyzing museum exhibits. Follow the user's custom instructions for WHAT to analyze, but maintain consistent formatting.
+    // Build template structure from user's template
+    const templateStructure = buildTemplateStructure(template);
 
-TONE: ${styleGuidance[reportStyle as keyof typeof styleGuidance] || styleGuidance.professional}
+    const systemPrompt = `YOU MUST FOLLOW THIS EXACT STRUCTURE. DO NOT ADD OR REMOVE ANY SECTIONS OR SUB-HEADINGS.
 
-FORMATTING STRUCTURE (use this as your template):
----
+MANDATORY FORMAT for EVERY exhibit:
+
 **EXHIBIT [NUMBER]** (all caps, bold)
 
-**Title:** [object name]
+${templateStructure}
 
-**[Section Name]**
-
-**Sub-heading:** [content]
-**Sub-heading:** [content]
-
-**[Section Name]**
-
-**Sub-heading:** [content]
-**Sub-heading:** [content]
 ---
 
-EXAMPLE FORMAT for sections (you can adapt sections based on user's instructions):
-
-**Historical Significance**
-**Date:** ...
-**Significance:** ...
-
-**Physical Condition**
-**Materials:** ...
-**Condition:** ...
-
-**Preservation**
-**Recommendations:** ...
-
 CRITICAL RULES:
-- **EXHIBIT [NUMBER]** must be ALL CAPS and bold
-- Use **bold** for ALL section headers and sub-headers
+- Use ONLY the sections and sub-headings listed above
+- DO NOT add, remove, or modify any sections or sub-headings
+- DO NOT improvise or create new sections
+- "EXHIBIT [NUMBER]" must be ALL CAPS and bold
+- All section headers and sub-headers must be **bold**
 - Each sub-heading on its OWN line
 - NO numbering (1., 2., 3.) before headings
 - ${depthGuidance[reportDepth as keyof typeof depthGuidance] || depthGuidance.standard}
+- ${styleGuidance[reportStyle as keyof typeof styleGuidance] || styleGuidance.professional}
 
-Now follow the user's specific analysis instructions below.`;
+User's analysis instructions: ${prompt}`;
 
     // Build message content
     const userContent: Array<
@@ -486,7 +548,7 @@ export const generateReport = onDocumentCreated(
       return;
     }
 
-    const {imageIds, prompt, userId, reportStyle, reportDepth} = data;
+    const {imageIds, prompt, userId, reportStyle, reportDepth, template} = data;
 
     // Validate inputs
     if (!imageIds || !prompt || !userId || !Array.isArray(imageIds) || imageIds.length === 0) {
@@ -494,6 +556,17 @@ export const generateReport = onDocumentCreated(
       await snapshot.ref.update({
         status: "failed",
         error: "Missing required fields or image data",
+        completedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      return;
+    }
+
+    // Validate template
+    if (!template || !template.sections || template.sections.length === 0) {
+      logger.error("Missing or invalid template", {reportId, hasTemplate: !!template});
+      await snapshot.ref.update({
+        status: "failed",
+        error: "Template structure is required",
         completedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
       return;
@@ -617,6 +690,7 @@ export const generateReport = onDocumentCreated(
               prompt,
               reportStyle || "professional",
               reportDepth || "standard",
+              template,
               openai,
               bucket
             )
@@ -679,6 +753,7 @@ export const generateReport = onDocumentCreated(
                 prompt,
                 reportStyle || "professional",
                 reportDepth || "standard",
+                template,
                 openai,
                 bucket
               );
@@ -710,7 +785,7 @@ export const generateReport = onDocumentCreated(
         const rawReport = `# Museum Collection Analysis\n\n**Total Exhibits Analyzed:** ${imageCount}\n**Processing Method:** Parallel Batch Processing\n**Batches Processed:** ${batches.length}\n**Report Style:** ${reportStyle || "Professional"}\n**Depth:** ${reportDepth || "Standard"}\n\n---\n\n${successfulResults.map((r) => r.report).join("\n\n---\n\n")}`;
 
         // Normalize formatting to ensure consistency across all batches
-        const finalReport = normalizeReportFormatting(rawReport);
+        const finalReport = normalizeReportFormatting(rawReport, template);
 
         logger.info("Batch processing completed", {
           totalBatches: batches.length,
@@ -783,7 +858,7 @@ export const generateReport = onDocumentCreated(
           }
         }
 
-        // System prompt with STRICT template (same as batch processing)
+        // System prompt with DYNAMIC template (same as batch processing)
         const depthGuidance = {
           brief: "Be concise and focus on key findings.",
           standard: "Provide balanced analysis with important details.",
@@ -796,48 +871,31 @@ export const generateReport = onDocumentCreated(
           academic: "Use formal, scholarly language. Include technical terminology and detailed analysis.",
         };
 
-        const systemPrompt = `You are analyzing museum exhibits. Follow the user's custom instructions for WHAT to analyze, but maintain consistent formatting.
+        // Build template structure from user's template
+        const templateStructure = buildTemplateStructure(template);
 
-TONE: ${styleGuidance[reportStyle as keyof typeof styleGuidance] || styleGuidance.professional}
+        const systemPrompt = `YOU MUST FOLLOW THIS EXACT STRUCTURE. DO NOT ADD OR REMOVE ANY SECTIONS OR SUB-HEADINGS.
 
-FORMATTING STRUCTURE (use this as your template):
----
+MANDATORY FORMAT for EVERY exhibit:
+
 **EXHIBIT [NUMBER]** (all caps, bold)
 
-**Title:** [object name]
+${templateStructure}
 
-**[Section Name]**
-
-**Sub-heading:** [content]
-**Sub-heading:** [content]
-
-**[Section Name]**
-
-**Sub-heading:** [content]
-**Sub-heading:** [content]
 ---
 
-EXAMPLE FORMAT (you can adapt sections based on user's instructions):
-**Historical Significance**
-**Title:** ...
-**Date:** ...
-**Significance:** ...
-
-**Physical Condition**
-**Materials:** ...
-**Condition:** ...
-
-**Preservation**
-**Recommendations:** ...
-
 CRITICAL RULES:
-- **EXHIBIT [NUMBER]** must be ALL CAPS and bold
-- Use **bold** for ALL section headers and sub-headers
+- Use ONLY the sections and sub-headings listed above
+- DO NOT add, remove, or modify any sections or sub-headings
+- DO NOT improvise or create new sections
+- "EXHIBIT [NUMBER]" must be ALL CAPS and bold
+- All section headers and sub-headers must be **bold**
 - Each sub-heading on its OWN line
 - NO numbering (1., 2., 3.) before headings
 - ${depthGuidance[reportDepth as keyof typeof depthGuidance] || depthGuidance.standard}
+- ${styleGuidance[reportStyle as keyof typeof styleGuidance] || styleGuidance.professional}
 
-Now follow the user's specific analysis instructions below.`;
+User's analysis instructions: ${prompt}`;
 
         // Build message content with images and text
         const userContent: Array<
@@ -871,7 +929,7 @@ Now follow the user's specific analysis instructions below.`;
         const rawReport = response.choices[0]?.message?.content || "Failed to generate report";
 
         // Normalize formatting to ensure consistency
-        const report = normalizeReportFormatting(rawReport);
+        const report = normalizeReportFormatting(rawReport, template);
 
         logger.info("Report generated successfully", {
           reportLength: report.length,

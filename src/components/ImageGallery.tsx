@@ -1,11 +1,9 @@
 import { useState, useEffect } from 'react';
-import { collection, query, where, orderBy, onSnapshot, Timestamp, addDoc, doc } from 'firebase/firestore';
+import { collection, query, where, orderBy, onSnapshot, Timestamp, addDoc, doc, deleteDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import '../styles/ImageGallery.css';
 import ReactMarkdown from 'react-markdown';
-
-import { deleteDoc } from 'firebase/firestore';
 import { ref, deleteObject } from 'firebase/storage';
 import { storage } from '../firebase';
 
@@ -20,6 +18,32 @@ interface ImageDocument {
   status: string;
   error?: string; // Error message for failed extractions
 }
+
+// Template Interfaces
+interface TemplateSection {
+  name: string;
+  type: 'single' | 'section'; // 'single' = field, 'section' = section with sub-headings
+  subHeadings: string[];
+}
+
+interface ReportTemplate {
+  id?: string; // Firestore document ID
+  templateName: string;
+  sections: TemplateSection[];
+  userId?: string;
+  createdAt?: Date;
+}
+
+// Default template
+const DEFAULT_TEMPLATE: ReportTemplate = {
+  templateName: "Historical Analysis (Default)",
+  sections: [
+    { name: "Title", type: "single", subHeadings: [] },
+    { name: "Historical Significance", type: "section", subHeadings: ["Date", "Significance"] },
+    { name: "Physical Condition", type: "section", subHeadings: ["Materials", "Condition"] },
+    { name: "Preservation", type: "section", subHeadings: ["Recommendations"] }
+  ]
+};
 
 
 export default function ImageGallery({ refreshTrigger }: { refreshTrigger: number }) {
@@ -39,29 +63,162 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
   const [showReportModal, setShowReportModal] = useState(false);
   const [reportDepth, setReportDepth] = useState<'brief' | 'standard' | 'comprehensive'>('standard');
   const [reportStyle, setReportStyle] = useState<'casual' | 'professional' | 'academic'>('professional');
+  
+  // Template state management
+  const [savedTemplates, setSavedTemplates] = useState<ReportTemplate[]>([]);
+  const [currentTemplate, setCurrentTemplate] = useState<ReportTemplate>(DEFAULT_TEMPLATE);
+  const [showTemplateModal, setShowTemplateModal] = useState(false);
+  
   const { currentUser } = useAuth();
 
-  // Helper function: Clean report formatting for consistent display
-  const cleanReportFormatting = (reportText: string): string => {
-    return reportText
-      // Standardize "Exhibit #X" to "EXHIBIT X" (all caps, remove #, make bold)
-      .replace(/\*{0,2}Exhibit\s*#?\s*(\d+)\*{0,2}/gi, '**EXHIBIT $1**')
-      // Split sub-headers that are on the same line (e.g., "Date: text Significance: text")
-      .replace(/\*{0,2}(Date|Significance|Materials|Condition|Recommendations):\*{0,2}\s*([^\n]+?)\s+\*{0,2}(Title|Date|Significance|Materials|Condition|Recommendations):/gi, 
-               '**$1:** $2\n\n**$3:')
-      // Make section headers BOLD
-      .replace(/^(Historical Significance|Physical Condition|Preservation)$/gmi, '**$1**')
-      // Remove numbered list prefixes from section headings (1., 2., 3., etc.)
-      .replace(/^\s*\d+\.\s+(Historical Significance:?|Physical Condition:?|Preservation:?)/gmi, '**$1**')
-      // Remove bullet point prefixes from section headings (•, -, *, etc.)
-      .replace(/^\s*[•\-*]\s+(Historical Significance:?|Physical Condition:?|Preservation:?)/gmi, '**$1**')
-      // Remove colons after section headers
-      .replace(/^(Historical Significance|Physical Condition|Preservation):\s*/gmi, '**$1**\n\n')
-      // Make sub-headers BOLD and add line breaks (Title:, Date:, etc.)
-      .replace(/(Title:|Date:|Significance:|Materials:|Condition:|Recommendations:)/g, '\n**$1**')
-      // Clean up multiple newlines
-      .replace(/\n{3,}/g, '\n\n');
+  // Helper function: Clean report formatting for consistent display (template-aware)
+  const cleanReportFormatting = (reportText: string, template?: ReportTemplate): string => {
+    let cleaned = reportText;
+    const activeTemplate = template || currentTemplate;
+    
+    // Standardize "Exhibit #X" to "EXHIBIT X" (all caps, remove #, make bold)
+    cleaned = cleaned.replace(/\*{0,2}Exhibit\s*#?\s*(\d+)\*{0,2}/gi, '**EXHIBIT $1**');
+    
+    // Extract section and sub-heading names from template
+    const sectionNames = activeTemplate.sections
+      .filter(s => s.type === 'section')
+      .map(s => s.name);
+    
+    const allHeadings = [
+      ...activeTemplate.sections.filter(s => s.type === 'single').map(s => s.name),
+      ...activeTemplate.sections.flatMap(s => s.subHeadings)
+    ];
+    
+    // Split sub-headers that are on the same line (dynamic based on template)
+    if (allHeadings.length > 0) {
+      const escapedHeadings = allHeadings.map(h => h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+      const headingPattern = escapedHeadings.join('|');
+      cleaned = cleaned.replace(
+        new RegExp(`\\*{0,2}(${headingPattern}):\\*{0,2}\\s*([^\\n]+?)\\s+\\*{0,2}(${headingPattern}):`, 'gi'),
+        '**$1:** $2\n\n**$3:'
+      );
+    }
+    
+    // Make section headers BOLD (dynamic)
+    sectionNames.forEach(sectionName => {
+      const escapedName = sectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      cleaned = cleaned.replace(
+        new RegExp(`^(${escapedName})$`, 'gmi'),
+        '**$1**'
+      );
+    });
+    
+    // Remove numbered list prefixes from section headings (dynamic)
+    sectionNames.forEach(sectionName => {
+      const escapedName = sectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      cleaned = cleaned.replace(
+        new RegExp(`^\\s*\\d+\\.\\s+(${escapedName}):?`, 'gmi'),
+        '**$1**'
+      );
+    });
+    
+    // Remove bullet point prefixes from section headings (dynamic)
+    sectionNames.forEach(sectionName => {
+      const escapedName = sectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      cleaned = cleaned.replace(
+        new RegExp(`^\\s*[•\\-*]\\s+(${escapedName}):?`, 'gmi'),
+        '**$1**'
+      );
+    });
+    
+    // Remove colons after section headers (dynamic)
+    sectionNames.forEach(sectionName => {
+      const escapedName = sectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      cleaned = cleaned.replace(
+        new RegExp(`^(${escapedName}):\\s*`, 'gmi'),
+        '**$1**\n\n'
+      );
+    });
+    
+    // Make sub-headers BOLD and add line breaks (dynamic)
+    allHeadings.forEach(heading => {
+      const escapedName = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      cleaned = cleaned.replace(
+        new RegExp(`(${escapedName}:)`, 'g'),
+        '\n**$1**'
+      );
+    });
+    
+    // Clean up multiple newlines
+    return cleaned.replace(/\n{3,}/g, '\n\n');
   };
+
+  // Firestore functions for templates
+  const loadUserTemplates = async () => {
+    if (!currentUser) return;
+    
+    try {
+      const templatesQuery = query(
+        collection(db, 'reportTemplates'),
+        where('userId', '==', currentUser.uid),
+        orderBy('createdAt', 'desc')
+      );
+      
+      const unsubscribe = onSnapshot(templatesQuery, (snapshot) => {
+        const templates = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        } as ReportTemplate));
+        setSavedTemplates(templates);
+      });
+      
+      return unsubscribe;
+    } catch (error) {
+      console.error('Error loading templates:', error);
+    }
+  };
+
+  const saveTemplate = async (template: ReportTemplate) => {
+    if (!currentUser) return;
+    
+    try {
+      const templateData = {
+        ...template,
+        userId: currentUser.uid,
+        createdAt: new Date()
+      };
+      
+      if (template.id) {
+        // Update existing template
+        await updateDoc(doc(db, 'reportTemplates', template.id), templateData);
+      } else {
+        // Create new template
+        await addDoc(collection(db, 'reportTemplates'), templateData);
+      }
+      
+      alert('Template saved successfully!');
+    } catch (error) {
+      console.error('Error saving template:', error);
+      alert('Failed to save template. Please try again.');
+    }
+  };
+
+  const deleteTemplate = async (templateId: string) => {
+    if (!window.confirm('Delete this template?')) return;
+    
+    try {
+      await deleteDoc(doc(db, 'reportTemplates', templateId));
+      alert('Template deleted successfully!');
+    } catch (error) {
+      console.error('Error deleting template:', error);
+      alert('Failed to delete template. Please try again.');
+    }
+  };
+
+  // Load user's saved templates on mount
+  useEffect(() => {
+    const unsubscribe = loadUserTemplates();
+    return () => {
+      if (unsubscribe) {
+        unsubscribe.then(unsub => unsub && unsub());
+      }
+    };
+  }, [currentUser]);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -197,6 +354,7 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
         imageCount: selectedImages.length,
         reportDepth,
         reportStyle,
+        template: currentTemplate, // Pass template structure
         status: 'pending',
         createdAt: new Date()
       });
@@ -769,6 +927,72 @@ ${htmlContent}
               📄 Configure Report
             </h2>
 
+            {/* Template Manager Section */}
+            <div style={{ marginBottom: '24px', padding: '16px', background: '#f9fafb', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
+              <h3 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '12px' }}>📋 Report Template</h3>
+              
+              {/* Template Selector */}
+              <div style={{ marginBottom: '12px' }}>
+                <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: 500, color: '#6b7280' }}>
+                  Select Template
+                </label>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <select 
+                    value={currentTemplate.templateName}
+                    onChange={(e) => {
+                      const selected = [DEFAULT_TEMPLATE, ...savedTemplates].find(t => t.templateName === e.target.value);
+                      if (selected) setCurrentTemplate(selected);
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: '8px',
+                      borderRadius: '6px',
+                      border: '1px solid #d1d5db',
+                      fontSize: '14px'
+                    }}
+                  >
+                    <option value={DEFAULT_TEMPLATE.templateName}>{DEFAULT_TEMPLATE.templateName}</option>
+                    {savedTemplates.map(t => (
+                      <option key={t.id} value={t.templateName}>{t.templateName}</option>
+                    ))}
+                  </select>
+                  <button 
+                    onClick={() => setShowTemplateModal(true)} 
+                    style={{
+                      padding: '8px 12px',
+                      background: '#3b82f6',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontSize: '13px',
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    ✏️ Edit
+                  </button>
+                </div>
+              </div>
+              
+              {/* Template Preview */}
+              <div style={{ padding: '12px', background: 'white', borderRadius: '6px', border: '1px solid #e5e7eb' }}>
+                <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '8px', color: '#374151' }}>Structure:</div>
+                <ul style={{ marginLeft: '20px', fontSize: '13px', color: '#6b7280' }}>
+                  <li><strong>EXHIBIT [NUMBER]</strong> (always present)</li>
+                  {currentTemplate.sections.map((section, idx) => (
+                    <li key={idx}>
+                      <strong>{section.name}</strong>
+                      {section.type === 'section' && section.subHeadings.length > 0 && (
+                        <ul style={{ marginLeft: '16px', marginTop: '4px' }}>
+                          {section.subHeadings.map(sh => <li key={sh}>{sh}</li>)}
+                        </ul>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+
             {/* Prompt Textarea */}
             <div style={{ marginBottom: '24px' }}>
               <label style={{ display: 'block', marginBottom: '8px', fontWeight: 500, fontSize: '14px' }}>
@@ -892,6 +1116,241 @@ ${htmlContent}
               >
                 📄 Generate Report
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Template Editor Modal */}
+      {showTemplateModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0, 0, 0, 0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1001
+        }} onClick={() => setShowTemplateModal(false)}>
+          <div style={{
+            background: 'white',
+            borderRadius: '12px',
+            padding: '32px',
+            maxWidth: '700px',
+            width: '90%',
+            maxHeight: '90vh',
+            overflowY: 'auto'
+          }} onClick={(e) => e.stopPropagation()}>
+            <h2 style={{ marginBottom: '24px', fontSize: '24px', fontWeight: 600 }}>
+              📝 Edit Template
+            </h2>
+
+            {/* Template Name */}
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', marginBottom: '6px', fontWeight: 500, fontSize: '14px' }}>
+                Template Name
+              </label>
+              <input
+                type="text"
+                value={currentTemplate.templateName}
+                onChange={(e) => setCurrentTemplate({...currentTemplate, templateName: e.target.value})}
+                placeholder="e.g., Art Analysis, Document Review"
+                style={{
+                  width: '100%',
+                  padding: '10px',
+                  borderRadius: '6px',
+                  border: '1px solid #d1d5db',
+                  fontSize: '14px'
+                }}
+              />
+            </div>
+
+            {/* Sections Editor */}
+            <div style={{ marginBottom: '20px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                <label style={{ fontWeight: 500, fontSize: '14px' }}>
+                  Sections & Sub-headings
+                </label>
+                <button 
+                  onClick={() => {
+                    setCurrentTemplate({
+                      ...currentTemplate,
+                      sections: [...currentTemplate.sections, { name: 'New Section', type: 'section', subHeadings: [] }]
+                    });
+                  }}
+                  style={{
+                    padding: '6px 12px',
+                    background: '#10b981',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    fontSize: '13px'
+                  }}
+                >
+                  + Add Section
+                </button>
+              </div>
+
+              {/* Section List */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {currentTemplate.sections.map((section, idx) => (
+                  <div key={idx} style={{ padding: '16px', background: '#f9fafb', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
+                    <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
+                      {/* Section Name */}
+                      <input
+                        type="text"
+                        value={section.name}
+                        onChange={(e) => {
+                          const newSections = [...currentTemplate.sections];
+                          newSections[idx].name = e.target.value;
+                          setCurrentTemplate({...currentTemplate, sections: newSections});
+                        }}
+                        placeholder="Section name"
+                        style={{
+                          flex: 1,
+                          padding: '8px',
+                          borderRadius: '6px',
+                          border: '1px solid #d1d5db',
+                          fontSize: '14px',
+                          fontWeight: 500
+                        }}
+                      />
+                      
+                      {/* Section Type Toggle */}
+                      <select
+                        value={section.type}
+                        onChange={(e) => {
+                          const newSections = [...currentTemplate.sections];
+                          newSections[idx].type = e.target.value as 'single' | 'section';
+                          setCurrentTemplate({...currentTemplate, sections: newSections});
+                        }}
+                        style={{
+                          padding: '8px',
+                          borderRadius: '6px',
+                          border: '1px solid #d1d5db',
+                          fontSize: '13px'
+                        }}
+                      >
+                        <option value="single">Field</option>
+                        <option value="section">Section</option>
+                      </select>
+                      
+                      {/* Remove Section Button */}
+                      <button 
+                        onClick={() => {
+                          const newSections = currentTemplate.sections.filter((_, i) => i !== idx);
+                          setCurrentTemplate({...currentTemplate, sections: newSections});
+                        }}
+                        style={{
+                          padding: '8px 12px',
+                          background: '#ef4444',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '6px',
+                          cursor: 'pointer',
+                          fontSize: '13px'
+                        }}
+                      >
+                        ✕
+                      </button>
+                    </div>
+
+                    {/* Sub-headings (only for 'section' type) */}
+                    {section.type === 'section' && (
+                      <div>
+                        <label style={{ display: 'block', marginBottom: '6px', fontSize: '12px', fontWeight: 500, color: '#6b7280' }}>
+                          Sub-headings (comma-separated):
+                        </label>
+                        <input
+                          type="text"
+                          value={section.subHeadings.join(', ')}
+                          onChange={(e) => {
+                            const newSections = [...currentTemplate.sections];
+                            newSections[idx].subHeadings = e.target.value.split(',').map(s => s.trim()).filter(s => s);
+                            setCurrentTemplate({...currentTemplate, sections: newSections});
+                          }}
+                          placeholder="e.g., Date, Significance, Materials"
+                          style={{
+                            width: '100%',
+                            padding: '8px',
+                            borderRadius: '6px',
+                            border: '1px solid #d1d5db',
+                            fontSize: '13px'
+                          }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div style={{ display: 'flex', gap: '12px', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                {currentTemplate.id && (
+                  <button
+                    onClick={async () => {
+                      await deleteTemplate(currentTemplate.id!);
+                      setCurrentTemplate(DEFAULT_TEMPLATE);
+                      setShowTemplateModal(false);
+                    }}
+                    style={{
+                      padding: '10px 20px',
+                      background: '#ef4444',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontSize: '14px',
+                      fontWeight: 500
+                    }}
+                  >
+                    🗑️ Delete
+                  </button>
+                )}
+              </div>
+              
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  onClick={() => setShowTemplateModal(false)}
+                  style={{
+                    padding: '10px 20px',
+                    background: '#f3f4f6',
+                    color: '#374151',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    fontSize: '14px',
+                    fontWeight: 500
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={async () => {
+                    await saveTemplate(currentTemplate);
+                    setShowTemplateModal(false);
+                  }}
+                  disabled={!currentTemplate.templateName.trim() || currentTemplate.sections.length === 0}
+                  style={{
+                    padding: '10px 20px',
+                    background: (!currentTemplate.templateName.trim() || currentTemplate.sections.length === 0) ? '#9ca3af' : '#10b981',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: (!currentTemplate.templateName.trim() || currentTemplate.sections.length === 0) ? 'not-allowed' : 'pointer',
+                    fontSize: '14px',
+                    fontWeight: 600
+                  }}
+                >
+                  💾 Save Template
+                </button>
+              </div>
             </div>
           </div>
         </div>
