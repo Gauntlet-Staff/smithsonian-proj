@@ -155,8 +155,9 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
     try {
       const templatesQuery = query(
         collection(db, 'reportTemplates'),
-        where('userId', '==', currentUser.uid),
-        orderBy('createdAt', 'desc')
+        where('userId', '==', currentUser.uid)
+        // Note: orderBy removed to avoid needing composite index
+        // Templates will be loaded in document ID order
       );
       
       const unsubscribe = onSnapshot(templatesQuery, (snapshot) => {
@@ -164,12 +165,18 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
           id: doc.id,
           ...doc.data()
         } as ReportTemplate));
+        
+        // Sort by templateName alphabetically for better UX
+        templates.sort((a, b) => a.templateName.localeCompare(b.templateName));
+        
         setSavedTemplates(templates);
       });
       
       return unsubscribe;
     } catch (error) {
       console.error('Error loading templates:', error);
+      // Show error to user so they know something went wrong
+      alert('Failed to load templates. Please refresh the page.');
     }
   };
 
