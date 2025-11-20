@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { collection, query, where, orderBy, onSnapshot, Timestamp, addDoc, doc, deleteDoc, updateDoc } from 'firebase/firestore';
+import { collection, query, where, orderBy, onSnapshot, Timestamp, addDoc, doc, deleteDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import '../styles/ImageGallery.css';
@@ -183,15 +183,17 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
         subHeadings: section.subHeadings.filter(sh => sh.trim())
       }));
       
-      const templateData = {
-        ...template,
+      const templateData: any = {
+        templateName: template.templateName,
         sections: cleanedSections,
         userId: currentUser.uid,
-        createdAt: new Date()
+        createdAt: serverTimestamp()
       };
       
       if (template.id) {
-        // Update existing template
+        // Update existing template (remove createdAt for updates)
+        delete templateData.createdAt;
+        templateData.updatedAt = serverTimestamp();
         await updateDoc(doc(db, 'reportTemplates', template.id), templateData);
       } else {
         // Create new template
@@ -201,7 +203,8 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
       alert('Template saved successfully!');
     } catch (error) {
       console.error('Error saving template:', error);
-      alert('Failed to save template. Please try again.');
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      alert(`Failed to save template: ${errorMessage}`);
     }
   };
 
@@ -372,7 +375,7 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
         reportStyle,
         template: cleanedTemplate, // Pass cleaned template structure
         status: 'pending',
-        createdAt: new Date()
+        createdAt: serverTimestamp()
       });
       
       setCurrentReportId(reportRef.id);
