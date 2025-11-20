@@ -195,12 +195,21 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
         delete templateData.createdAt;
         templateData.updatedAt = serverTimestamp();
         await updateDoc(doc(db, 'reportTemplates', template.id), templateData);
+        alert('Template updated successfully!');
       } else {
         // Create new template
-        await addDoc(collection(db, 'reportTemplates'), templateData);
+        const docRef = await addDoc(collection(db, 'reportTemplates'), templateData);
+        // Update currentTemplate with the new ID so future saves update instead of creating duplicates
+        setCurrentTemplate({
+          ...template,
+          id: docRef.id,
+          sections: cleanedSections
+        });
+        alert('Template saved successfully!');
       }
       
-      alert('Template saved successfully!');
+      // Close the modal after saving
+      setShowTemplateModal(false);
     } catch (error) {
       console.error('Error saving template:', error);
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -957,10 +966,14 @@ ${htmlContent}
                 </label>
                 <div style={{ display: 'flex', gap: '8px' }}>
                   <select 
-                    value={currentTemplate.templateName}
+                    value={currentTemplate.id || 'default'}
                     onChange={(e) => {
-                      const selected = [DEFAULT_TEMPLATE, ...savedTemplates].find(t => t.templateName === e.target.value);
-                      if (selected) setCurrentTemplate(selected);
+                      if (e.target.value === 'default') {
+                        setCurrentTemplate(DEFAULT_TEMPLATE);
+                      } else {
+                        const selected = savedTemplates.find(t => t.id === e.target.value);
+                        if (selected) setCurrentTemplate(selected);
+                      }
                     }}
                     style={{
                       flex: 1,
@@ -970,9 +983,9 @@ ${htmlContent}
                       fontSize: '14px'
                     }}
                   >
-                    <option value={DEFAULT_TEMPLATE.templateName}>{DEFAULT_TEMPLATE.templateName}</option>
+                    <option value="default">{DEFAULT_TEMPLATE.templateName}</option>
                     {savedTemplates.map(t => (
-                      <option key={t.id} value={t.templateName}>{t.templateName}</option>
+                      <option key={t.id} value={t.id}>{t.templateName}</option>
                     ))}
                   </select>
                   <button 
@@ -989,6 +1002,29 @@ ${htmlContent}
                     }}
                   >
                     ✏️ Edit
+                  </button>
+                  <button 
+                    onClick={() => {
+                      setCurrentTemplate({
+                        templateName: 'New Template',
+                        sections: [
+                          { name: 'Title', type: 'single', subHeadings: [] }
+                        ]
+                      });
+                      setShowTemplateModal(true);
+                    }} 
+                    style={{
+                      padding: '8px 12px',
+                      background: '#10b981',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontSize: '13px',
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    ➕ New
                   </button>
                 </div>
               </div>
@@ -1164,7 +1200,7 @@ ${htmlContent}
             overflowY: 'auto'
           }} onClick={(e) => e.stopPropagation()}>
             <h2 style={{ marginBottom: '24px', fontSize: '24px', fontWeight: 600 }}>
-              📝 Edit Template
+              {currentTemplate.id ? '📝 Edit Template' : '➕ Create New Template'}
             </h2>
 
             {/* Template Name */}
@@ -1354,7 +1390,6 @@ ${htmlContent}
                 <button
                   onClick={async () => {
                     await saveTemplate(currentTemplate);
-                    setShowTemplateModal(false);
                   }}
                   disabled={!currentTemplate.templateName.trim() || currentTemplate.sections.length === 0}
                   style={{
@@ -1368,7 +1403,7 @@ ${htmlContent}
                     fontWeight: 600
                   }}
                 >
-                  💾 Save Template
+                  {currentTemplate.id ? '💾 Update Template' : '➕ Create Template'}
                 </button>
               </div>
             </div>
