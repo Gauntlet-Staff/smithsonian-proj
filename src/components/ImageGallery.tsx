@@ -177,8 +177,15 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
     if (!currentUser) return;
     
     try {
+      // Clean template: filter out empty sub-headings
+      const cleanedSections = template.sections.map(section => ({
+        ...section,
+        subHeadings: section.subHeadings.filter(sh => sh.trim())
+      }));
+      
       const templateData = {
         ...template,
+        sections: cleanedSections,
         userId: currentUser.uid,
         createdAt: new Date()
       };
@@ -345,6 +352,15 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
       // Get all selected images
       const selectedImages = images.filter(img => selectedImageIds.has(img.id));
       
+      // Clean template before sending: filter out empty sub-headings
+      const cleanedTemplate = {
+        ...currentTemplate,
+        sections: currentTemplate.sections.map(section => ({
+          ...section,
+          subHeadings: section.subHeadings.filter(sh => sh.trim())
+        }))
+      };
+      
       // Create a report document in Firestore - this triggers the Cloud Function
       // Only pass imageIds - the Cloud Function will fetch full data from Firestore
       const reportRef = await addDoc(collection(db, 'reports'), {
@@ -354,7 +370,7 @@ export default function ImageGallery({ refreshTrigger }: { refreshTrigger: numbe
         imageCount: selectedImages.length,
         reportDepth,
         reportStyle,
-        template: currentTemplate, // Pass template structure
+        template: cleanedTemplate, // Pass cleaned template structure
         status: 'pending',
         createdAt: new Date()
       });
@@ -1270,7 +1286,8 @@ ${htmlContent}
                           value={section.subHeadings.join(', ')}
                           onChange={(e) => {
                             const newSections = [...currentTemplate.sections];
-                            newSections[idx].subHeadings = e.target.value.split(',').map(s => s.trim()).filter(s => s);
+                            // Don't filter empty strings while typing - only trim individual items
+                            newSections[idx].subHeadings = e.target.value.split(',').map(s => s.trim());
                             setCurrentTemplate({...currentTemplate, sections: newSections});
                           }}
                           placeholder="e.g., Date, Significance, Materials"
