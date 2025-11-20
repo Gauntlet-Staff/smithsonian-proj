@@ -355,7 +355,15 @@ async function processBatch(
       comprehensive: "Be thorough and detailed in your analysis.",
     };
 
+    const styleGuidance = {
+      casual: "Use a friendly, conversational tone. Write as if explaining to a curious visitor.",
+      professional: "Use clear, professional museum language. Be informative and authoritative.",
+      academic: "Use formal, scholarly language. Include technical terminology and detailed analysis.",
+    };
+
     const systemPrompt = `You are analyzing museum exhibits. Follow the user's custom instructions for WHAT to analyze, but maintain consistent formatting.
+
+TONE: ${styleGuidance[reportStyle as keyof typeof styleGuidance] || styleGuidance.professional}
 
 FORMATTING STRUCTURE (use this as your template):
 ---
@@ -782,7 +790,15 @@ export const generateReport = onDocumentCreated(
           comprehensive: "Be thorough and detailed in your analysis.",
         };
 
+        const styleGuidance = {
+          casual: "Use a friendly, conversational tone. Write as if explaining to a curious visitor.",
+          professional: "Use clear, professional museum language. Be informative and authoritative.",
+          academic: "Use formal, scholarly language. Include technical terminology and detailed analysis.",
+        };
+
         const systemPrompt = `You are analyzing museum exhibits. Follow the user's custom instructions for WHAT to analyze, but maintain consistent formatting.
+
+TONE: ${styleGuidance[reportStyle as keyof typeof styleGuidance] || styleGuidance.professional}
 
 FORMATTING STRUCTURE (use this as your template):
 ---
